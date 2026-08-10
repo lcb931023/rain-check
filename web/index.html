@@ -7,6 +7,21 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="panel">
+    <h1 data-s="title"></h1>
+    <label><span data-s="drainage"></span>
+      <input id="drainage" type="range" min="0.2" max="2" step="0.1" value="1" />
+    </label>
+    <p class="hint" data-s="drainageHint"></p>
+    <div id="legend"></div>
+    <p class="hint" data-s="legendDisclaimer"></p>
+    <p id="freshness"></p>
+    <button id="lang"></button>
+  </div>
+  <div id="timebar">
+    <input id="time" type="range" />
+    <div id="timelabel"></div>
+  </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
