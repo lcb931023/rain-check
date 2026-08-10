@@ -67,10 +67,17 @@ try {
     series = computeFloodSeries(rain, weights, elev.depression, Number(drainInput.value));
     draw();
   });
+  timeInput.disabled = false;
 
   const f = new Date(rain.fetchedAt);
-  freshness.textContent = `${t('updatedAt')} ${String(f.getHours()).padStart(2, '0')}:${String(f.getMinutes()).padStart(2, '0')}`;
+  const now = new Date();
+  const sameDay = f.getFullYear() === now.getFullYear()
+    && f.getMonth() === now.getMonth()
+    && f.getDate() === now.getDate();
+  const hm = `${String(f.getHours()).padStart(2, '0')}:${String(f.getMinutes()).padStart(2, '0')}`;
+  freshness.textContent = `${t('updatedAt')} ${sameDay ? hm : `${f.getMonth() + 1}/${f.getDate()} ${hm}`}`;
   draw();
-} catch {
+} catch (e) {
+  console.error(e);
   freshness.textContent = t('noData');
 }
