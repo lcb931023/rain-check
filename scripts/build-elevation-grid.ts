@@ -30,12 +30,36 @@ async function loadTile(latSW: number, lonSW: number) {
   return { raster, ox, oy, rx, ry, width, height: image.getHeight() };
 }
 
+/**
+ * Mean of every source pixel whose centre falls in the cell's footprint.
+ *
+ * A cell is ~280m wide and a DEM pixel ~28m, so one nearest-neighbour pixel would
+ * stand in for ~100 of them and just as easily land on a rooftop as on the street
+ * beside it. That reads as noise, not topography: it left adjacent cells differing
+ * by 2.0m on average, as large as the terrain signal itself, and drove 20% of the
+ * grid onto the depression floor and 4% onto the ceiling. Averaging the block
+ * instead is what makes the TPI neighbourhood mean measure terrain.
+ */
 function sample(t: Awaited<ReturnType<typeof loadTile>>, lon: number, lat: number): number {
-  const px = Math.min(t.width - 1, Math.max(0, Math.round((lon - t.ox) / t.rx)));
-  const py = Math.min(t.height - 1, Math.max(0, Math.round((lat - t.oy) / t.ry)));
-  // No nodata handling: both tiles were swept pixel by pixel (25.9M values) and
-  // carry no void sentinel and no NaN — GDAL_NODATA is unset on both.
-  return t.raster[py * t.width + px];
+  const clampX = (v: number) => Math.min(t.width - 1, Math.max(0, v));
+  const clampY = (v: number) => Math.min(t.height - 1, Math.max(0, v));
+  // rx > 0 (lon ascends with x), ry < 0 (lat descends with y), so the north edge
+  // gives the low row index.
+  const x0 = clampX(Math.round((lon - STEP.lon / 2 - t.ox) / t.rx));
+  const x1 = clampX(Math.round((lon + STEP.lon / 2 - t.ox) / t.rx));
+  const y0 = clampY(Math.round((lat + STEP.lat / 2 - t.oy) / t.ry));
+  const y1 = clampY(Math.round((lat - STEP.lat / 2 - t.oy) / t.ry));
+  let sum = 0;
+  let n = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      // No nodata handling: both tiles were swept pixel by pixel (25.9M values) and
+      // carry no void sentinel and no NaN — GDAL_NODATA is unset on both.
+      sum += t.raster[y * t.width + x];
+      n++;
+    }
+  }
+  return sum / n;
 }
 
 const lons: number[] = [];

@@ -21,6 +21,13 @@ describe('computeDepression', () => {
     const corner = new Float32Array([0, 4, 4, 4, 4, 4, 4, 4, 4]);
     expect(computeDepression(corner, 3, 3, 1)[0]).toBeCloseTo(2.8, 5);
   });
+  it('reads w as the row stride on a non-square grid', () => {
+    // 4 wide x 2 high, one 3m cell at (x=1, y=1). Corner (0,0) sees (0,0) (1,0)
+    // (0,1) (1,1) = 0,0,0,3 -> mean 0.75 -> 1 + 0.6 * 0.75 = 1.45.
+    // Transposed to 2x4 the same corner sees 0,0,0,0 and reads 1.0.
+    const strip = new Float32Array([0, 0, 0, 0, 0, 3, 0, 0]);
+    expect(computeDepression(strip, 4, 2, 1)[0]).toBeCloseTo(1.45, 5);
+  });
   it('clamps to [0.2, 3]', () => {
     const extreme = new Float32Array([50, 50, 50, 50, 0, 50, 50, 50, 50]);
     expect(computeDepression(extreme, 3, 3, 1)[4]).toBe(3);
