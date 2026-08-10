@@ -87,12 +87,35 @@ async function writeCacheAtomic(file: string, grid: RainGrid): Promise<void> {
   await rename(tmp, file);
 }
 
-export async function sweep(opts: {
+interface SweepOptions {
   fetchPoint?: (lon: number, lat: number) => Promise<PointWeather>;
   cacheDir?: string;
   staggerMs?: number;
   now?: () => Date;
-} = {}): Promise<void> {
+}
+
+/**
+ * A sweep takes ~2 min of wall time and the refresh interval is 30 min, but a slow or
+ * retrying upstream could push one past the next tick. Two overlapping sweeps would
+ * double the request rate into a rate-limited API and race on the cache file, so a
+ * second sweep is skipped rather than queued — the next tick picks it up.
+ */
+let sweepInFlight = false;
+
+export async function sweep(opts: SweepOptions = {}): Promise<void> {
+  if (sweepInFlight) {
+    console.warn('sweep already in flight; skipping this tick');
+    return;
+  }
+  sweepInFlight = true;
+  try {
+    await runSweep(opts);
+  } finally {
+    sweepInFlight = false;
+  }
+}
+
+async function runSweep(opts: SweepOptions): Promise<void> {
   const cacheDir = opts.cacheDir ?? CONFIG.cacheDir;
   const staggerMs = opts.staggerMs ?? STAGGER_MS;
   const now = opts.now ?? (() => new Date());
@@ -123,7 +146,9 @@ export async function sweep(opts: {
   const old = await readCache(file);
   const merged = mergeRainCache(old, results, axes, now());
   if (!merged || merged === old) {
-    console.error('sweep failed entirely; serving stale cache');
+    // Cold start and outage read the same from inside the loop but not from outside it:
+    // with no cache on disk there is nothing to serve, and /api/rain 503s.
+    console.error(old ? 'sweep failed entirely; serving stale cache' : 'sweep failed entirely; no cache yet');
     return;
   }
   await writeCacheAtomic(file, merged);

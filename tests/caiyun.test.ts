@@ -30,6 +30,13 @@ describe('fetchPointWeather', () => {
     expect(url).toContain('/TOKEN/121.47,31.23/weather');
     expect(url).toContain('hourlysteps=48');
   });
+  it('gives the request an abort deadline', async () => {
+    const fetchFn = vi.fn().mockResolvedValue({ ok: true, json: async () => fakeResponse });
+    await fetchPointWeather(121.47, 31.23, 'TOKEN', fetchFn as any);
+    const init = fetchFn.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.signal?.aborted).toBe(false); // armed for this request, not already spent
+  });
   it('throws on non-ok API status', async () => {
     const fetchFn = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'failed', error: 'quota' }) });
     await expect(fetchPointWeather(121, 31, 'T', fetchFn as any)).rejects.toThrow(/quota/);

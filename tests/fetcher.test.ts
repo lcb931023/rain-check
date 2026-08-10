@@ -93,7 +93,7 @@ describe('sweep', () => {
       now: () => now,
     });
     expect(await readdir(dir)).toEqual([]); // no rain-grid.json, no leftover .tmp
-    expect(errors.mock.calls.at(-1)?.[0]).toBe('sweep failed entirely; serving stale cache');
+    expect(errors.mock.calls.at(-1)?.[0]).toBe('sweep failed entirely; no cache yet');
     errors.mockRestore();
   });
 
@@ -131,5 +131,43 @@ describe('sweep', () => {
     expect(await readdir(dir)).toEqual(['rain-grid.json']);
     expect(errors.mock.calls.at(-1)?.[0]).toBe('sweep failed entirely; serving stale cache');
     errors.mockRestore();
+  });
+
+  it('skips a sweep that starts while another is still in flight', async () => {
+    const dirA = await freshDir();
+    const dirB = await freshDir();
+    let firstCalls = 0;
+    let secondCalls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+
+    // The first sweep parks inside its very first point fetch, so it is provably mid-sweep.
+    const first = sweep({
+      fetchPoint: async () => { firstCalls++; await held; return pw(3, 1); },
+      cacheDir: dirA,
+      staggerMs: 0,
+      now: () => now,
+    });
+    await vi.waitFor(() => expect(firstCalls).toBe(1));
+
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await sweep({
+      fetchPoint: async () => { secondCalls++; return pw(9, 9); },
+      cacheDir: dirB,
+      staggerMs: 0,
+      now: () => now,
+    });
+    expect(secondCalls).toBe(0); // no requests issued
+    expect(await readdir(dirB)).toEqual([]); // and no cache written
+    expect(warns.mock.calls.at(-1)?.[0]).toBe('sweep already in flight; skipping this tick');
+    warns.mockRestore();
+
+    release();
+    await first;
+    expect(await readdir(dirA)).toEqual(['rain-grid.json']); // the held sweep still finishes
+
+    // The flag clears afterwards, so the next tick is not locked out.
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dirB, staggerMs: 0, now: () => now });
+    expect(await readdir(dirB)).toEqual(['rain-grid.json']);
   });
 });
