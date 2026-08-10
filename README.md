@@ -5,7 +5,7 @@ rainfall data with terrain (Copernicus GLO-30). Flood levels are **model
 estimates, not measurements** — nothing here is gauged water depth.
 
 The server sweeps a 14 × 13 grid of Caiyun points over the bbox
-121.2–121.8 E, 30.95–31.45 N every 30 minutes and keeps the result in
+121.2–121.8 E, 30.95–31.45 N every 3 hours and keeps the result in
 `cache/rain-grid.json`, covering −24 h … +48 h in hourly steps. The browser
 interpolates that rain onto a 201 × 201 elevation grid (~280 m cells), runs a
 running-bucket model (runoff 0.8, drainage 10 mm/h × the slider) and shades
@@ -20,23 +20,31 @@ coordinate is converted WGS-84 → GCJ-02 before it is drawn.
 
 Production: `npm run build && npm start` → everything on :8787.
 
-Other env vars: `PORT` (default 8787), `RAIN_REFRESH_MINUTES` (default 30).
+Other env vars: `PORT` (default 8787), `RAIN_REFRESH_MINUTES` (default 180).
 Node 20+ (developed on 24). Tests: `npm test` and `npx tsc --noEmit`.
 
-The rain cache fills on the first sweep: 182 points at a 450 ms stagger, which
-is ~82 s of stagger plus request latency — about **two minutes** of wall time
-measured. Until it lands, `/api/rain` answers 503 and the page says
-暂无降雨数据，请稍后刷新.
+**Quota budget.** The free Caiyun plan is a fixed pool of total calls (not a
+daily allowance) at QPS 1. One sweep costs 182 calls, so at the default
+3-hour refresh a running server spends ~1,456 calls/day — check 剩余调用量 on
+your Caiyun console and do the math before leaving it running for days.
+Lower `RAIN_REFRESH_MINUTES` (e.g. 60) during an active storm when fresher
+data is worth the spend, and stop the server when you don't need the map.
 
-Caiyun rate-limits per account, and 450 ms is what stopped the limiter from
-carving a permanent hole in the grid — but a busy account still draws HTTP 429
-on some points (57 of 182 on one observed sweep). On a **warm** cache those
+The rain cache fills on the first sweep: 182 points at a 1.1 s stagger
+(QPS-1 limit), which is ~3.3 min of stagger plus request latency — about
+**four minutes** of wall time. Until it lands, `/api/rain` answers 503 and
+the page says 暂无降雨数据，请稍后刷新.
+
+Caiyun rate-limits per account; the 1.1 s stagger stays under this plan's
+QPS 1, but a busy account can still draw HTTP 429 on some points. On a
+**warm** cache those
 cells keep their previous value and are refilled next sweep, so a
 partly-throttled sweep degrades instead of failing. On the **first** sweep
 after a cold start there is no previous value, so a throttled point stays null
 and renders as *no rain* — indistinguishable from genuinely dry ground, not as
-a gap. Those cells fill in over the next few refresh cycles, so treat the first
-half-hour or so of a fresh deploy as incomplete rather than authoritative.
+a gap. Those cells fill in over the next few refresh cycles (hours, at the
+default interval — the 数据覆盖 coverage line shows how complete the grid is),
+so treat a fresh deploy's first sweeps as incomplete rather than authoritative.
 If a whole sweep fails, the stale cache keeps being served.
 
 The −24 h history window self-accumulates over the first day of uptime: Caiyun

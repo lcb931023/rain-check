@@ -66,14 +66,14 @@ export function mergeRainCache(
 }
 
 /**
- * Delay between point requests. Caiyun refills this account's bucket at roughly
- * one request per 360 ms: a 120 ms stagger drew HTTP 429 on two of every three
- * points, in the same phase-locked lattice on every sweep, so those cells were
- * permanently empty. 450 ms clears the refill rate; a 182-point sweep costs
- * ~82 s of stagger plus request latency, ~2 min of wall time measured, well
- * inside the 30-minute refresh.
+ * Delay between point requests. This account's Caiyun plan is hard-limited to
+ * QPS 1 (per its quota page), which matched the observed behavior: a 120 ms
+ * stagger drew HTTP 429 on two of every three points in a phase-locked lattice,
+ * and 450 ms (~2.2 QPS) still drew scattered 429s. 1100 ms stays under 1 QPS
+ * with margin; a 182-point sweep costs ~3.3 min of stagger plus request
+ * latency, well inside the 3-hour refresh.
  */
-const STAGGER_MS = 450;
+const STAGGER_MS = 1100;
 
 async function readCache(file: string): Promise<RainGrid | null> {
   try { return JSON.parse(await readFile(file, 'utf8')); } catch { return null; }
@@ -95,7 +95,7 @@ interface SweepOptions {
 }
 
 /**
- * A sweep takes ~2 min of wall time and the refresh interval is 30 min, but a slow or
+ * A sweep takes ~4 min of wall time and the refresh interval is 3 h, but a slow or
  * retrying upstream could push one past the next tick. Two overlapping sweeps would
  * double the request rate into a rate-limited API and race on the cache file, so a
  * second sweep is skipped rather than queued — the next tick picks it up.
