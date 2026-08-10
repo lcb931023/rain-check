@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { CONFIG } from './config.js';
 import { fetchPointWeather, type PointWeather } from './caiyun.js';
 import type { RainGrid } from '../shared/types.js';
@@ -25,13 +25,19 @@ const hourStart = (d: Date) => {
   return h;
 };
 
+/**
+ * Merges one sweep's results into the previous grid. Pure.
+ * Returns `old` unchanged (by reference, possibly null) when no point succeeded,
+ * so the caller can tell "nothing to write" from "new grid" — `fetchedAt` only
+ * ever advances on a sweep that fetched at least one point.
+ */
 export function mergeRainCache(
   old: RainGrid | null,
   results: (PointWeather | null)[][],
   axes: { lons: number[]; lats: number[] },
   now: Date,
-): RainGrid {
-  if (!results.flat().some((r) => r !== null)) return old ?? emptyGrid(axes, now);
+): RainGrid | null {
+  if (!results.flat().some((r) => r !== null)) return old;
   const start = hourStart(new Date(now.getTime() - 24 * 3600_000));
   const hours: string[] = [];
   for (let i = 0; i <= 72; i++) hours.push(new Date(start.getTime() + i * 3600_000).toISOString());
@@ -59,43 +65,68 @@ export function mergeRainCache(
   return { fetchedAt: now.toISOString(), lons: axes.lons, lats: axes.lats, hours, nowIndex, precip };
 }
 
-function emptyGrid(axes: { lons: number[]; lats: number[] }, now: Date): RainGrid {
-  return { fetchedAt: now.toISOString(), lons: axes.lons, lats: axes.lats, hours: [], nowIndex: 0, precip: [] };
+/**
+ * Delay between point requests. Caiyun refills this account's bucket at roughly
+ * one request per 360 ms: a 120 ms stagger drew HTTP 429 on two of every three
+ * points, in the same phase-locked lattice on every sweep, so those cells were
+ * permanently empty. 450 ms clears the refill rate; a 182-point sweep takes
+ * ~82 s, well inside the 30-minute refresh.
+ */
+const STAGGER_MS = 450;
+
+async function readCache(file: string): Promise<RainGrid | null> {
+  try { return JSON.parse(await readFile(file, 'utf8')); } catch { return null; }
 }
 
-const CACHE_FILE = () => join(CONFIG.cacheDir, 'rain-grid.json');
-
-async function readCache(): Promise<RainGrid | null> {
-  try { return JSON.parse(await readFile(CACHE_FILE(), 'utf8')); } catch { return null; }
+/** Write via a same-directory temp file + rename, so readers never see a partial grid. */
+async function writeCacheAtomic(file: string, grid: RainGrid): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, JSON.stringify(grid));
+  await rename(tmp, file);
 }
 
-async function sweep(): Promise<void> {
-  const token = process.env.CAIYUN_API_TOKEN;
-  if (!token) { console.warn('CAIYUN_API_TOKEN missing; fetcher idle'); return; }
+export async function sweep(opts: {
+  fetchPoint?: (lon: number, lat: number) => Promise<PointWeather>;
+  cacheDir?: string;
+  staggerMs?: number;
+  now?: () => Date;
+} = {}): Promise<void> {
+  const cacheDir = opts.cacheDir ?? CONFIG.cacheDir;
+  const staggerMs = opts.staggerMs ?? STAGGER_MS;
+  const now = opts.now ?? (() => new Date());
+  let fetchPoint = opts.fetchPoint;
+  if (!fetchPoint) {
+    const token = process.env.CAIYUN_API_TOKEN;
+    if (!token) { console.warn('CAIYUN_API_TOKEN missing; fetcher idle'); return; }
+    fetchPoint = (lon, lat) => fetchPointWeather(lon, lat, token);
+  }
+
   const axes = gridAxes(CONFIG);
   const results: (PointWeather | null)[][] = [];
   for (const lat of axes.lats) {
     const row: (PointWeather | null)[] = [];
     for (const lon of axes.lons) {
       try {
-        row.push(await fetchPointWeather(lon, lat, token));
+        row.push(await fetchPoint(lon, lat));
       } catch (e) {
         console.error(`fetch failed @${lon},${lat}:`, (e as Error).message);
         row.push(null);
       }
-      await new Promise((r) => setTimeout(r, 120)); // stagger to be gentle on rate limits
+      await new Promise((r) => setTimeout(r, staggerMs));
     }
     results.push(row);
   }
-  const old = await readCache();
-  const merged = mergeRainCache(old, results, axes, new Date());
-  if (merged !== old) {
-    await mkdir(CONFIG.cacheDir, { recursive: true });
-    await writeFile(CACHE_FILE(), JSON.stringify(merged));
-    console.log(`rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
-  } else {
+
+  const file = join(cacheDir, 'rain-grid.json');
+  const old = await readCache(file);
+  const merged = mergeRainCache(old, results, axes, now());
+  if (!merged || merged === old) {
     console.error('sweep failed entirely; serving stale cache');
+    return;
   }
+  await writeCacheAtomic(file, merged);
+  console.log(`rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
 }
 
 export function startFetcherLoop(): void {
