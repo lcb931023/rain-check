@@ -1,7 +1,8 @@
 import './style.css';
-import { initMap } from './mapview.js';
+import { initMap, addReports, showCellPopup } from './mapview.js';
 import { drawFloodCanvas, floodColor, FLOOD_BANDS } from './render.js';
-import { fetchElevation, fetchRain } from './api.js';
+import { fetchElevation, fetchRain, fetchReports } from './api.js';
+import { wgs84ToGcj02 } from './gcj02.js';
 import { precomputeCellWeights } from './interp.js';
 import { computeFloodSeries } from './model.js';
 import { t, getLang, setLang } from './strings.js';
@@ -29,14 +30,18 @@ const freshness = document.getElementById('freshness')!;
 freshness.textContent = t('loading');
 
 const elev = await fetchElevation();
-const { canvas, repaint } = initMap(document.getElementById('map')!, elev);
-const ctx = canvas.getContext('2d')!;
+const mapHandle = initMap(document.getElementById('map')!, elev);
+const ctx = mapHandle.canvas.getContext('2d')!;
 applyStrings();
 
 document.getElementById('lang')!.addEventListener('click', () => {
   setLang(getLang() === 'zh' ? 'en' : 'zh');
   applyStrings();
 });
+
+// Curated reports do not depend on the rain grid, so they are wired above the try block:
+// a rain outage must not take the reports layer down with it.
+fetchReports().then((reports) => addReports(mapHandle.map, reports)).catch(() => {});
 
 const timeInput = document.getElementById('time') as HTMLInputElement;
 const drainInput = document.getElementById('drainage') as HTMLInputElement;
@@ -54,7 +59,7 @@ try {
   const draw = () => {
     const ti = Number(timeInput.value);
     drawFloodCanvas(ctx, series[ti], elev.lons.length, elev.lats.length);
-    repaint();
+    mapHandle.repaint();
     const d = new Date(rain.hours[ti]);
     const rel = ti - rain.nowIndex;
     const relText = rel === 0 ? t('now') : `${rel > 0 ? '+' : ''}${rel}h`;
@@ -68,6 +73,19 @@ try {
     draw();
   });
   timeInput.disabled = false;
+
+  mapHandle.map.on('click', (ev) => {
+    // Invert: find nearest elevation cell. GCJ-02 offset in Shanghai is a few hundred
+    // meters; for cell lookup (~280 m cells) invert by subtracting the local offset.
+    const [glon, glat] = [ev.lngLat.lng, ev.lngLat.lat];
+    const [glon2, glat2] = wgs84ToGcj02(glon, glat);
+    const wlon = glon - (glon2 - glon); // first-order inverse
+    const wlat = glat - (glat2 - glat);
+    const xi = Math.round((wlon - elev.lons[0]) / (elev.lons[1] - elev.lons[0]));
+    const yi = Math.round((wlat - elev.lats[0]) / (elev.lats[1] - elev.lats[0]));
+    if (xi < 0 || xi >= elev.lons.length || yi < 0 || yi >= elev.lats.length) return;
+    showCellPopup(mapHandle.map, ev.lngLat, series, rain.hours, rain.nowIndex, yi * elev.lons.length + xi);
+  });
 
   const f = new Date(rain.fetchedAt);
   const now = new Date();
