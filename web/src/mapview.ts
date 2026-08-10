@@ -38,5 +38,16 @@ export function initMap(container: HTMLElement, elev: ElevationGrid) {
     map.addLayer({ id: 'flood', type: 'raster', source: 'flood', paint: { 'raster-resampling': 'linear' } });
   });
 
-  return { map, canvas, repaint: () => map.triggerRepaint() };
+  return {
+    map,
+    canvas,
+    // A canvas source with animate:false only re-uploads its texture when prepare() sees
+    // resize || _playing, so triggerRepaint() alone would re-render the stale texture.
+    // play()+pause() runs prepare() once, synchronously, with _playing set.
+    repaint: () => {
+      const s = map.getSource('flood') as maplibregl.CanvasSource | undefined;
+      if (s) { s.play(); s.pause(); }
+      map.triggerRepaint();
+    },
+  };
 }
