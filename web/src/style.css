@@ -16,4 +16,8 @@ html, body, #map { height: 100%; margin: 0; }
 #time { width: 100%; }
 #timelabel { text-align: center; font-size: 13px; }
 #legend div { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-#legend i { width: 18px; height: 12px; display: inline-block; border-radius: 2px; }
+/* The bandNone swatch is 5% alpha over white, so it needs an outline to read as a swatch at all. */
+#legend i {
+  width: 18px; height: 12px; display: inline-block; border-radius: 2px;
+  box-sizing: border-box; border: 1px solid rgba(0, 0, 0, 0.25);
+}

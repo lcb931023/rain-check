@@ -16,7 +16,9 @@ export function initMap(container: HTMLElement, elev: ElevationGrid) {
     zoom: 10,
     style: {
       version: 8,
-      sources: { base: { type: 'raster', tiles: AMAP_TILES, tileSize: 256, attribution: '© 高德地图' } },
+      // AMap serves this style up to z18; without maxzoom MapLibre requests z19+ tiles,
+      // gets nothing back and the basemap goes blank. With it, z18 tiles are overscaled.
+      sources: { base: { type: 'raster', tiles: AMAP_TILES, tileSize: 256, maxzoom: 18, attribution: '© 高德地图' } },
       layers: [{ id: 'base', type: 'raster', source: 'base' }],
     },
   });
@@ -54,15 +56,43 @@ export function initMap(container: HTMLElement, elev: ElevationGrid) {
   };
 }
 
+/** Only absolute http(s) links become anchors; `javascript:` and friends fall back to plain text. */
+function httpUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function addReports(map: maplibregl.Map, reports: Report[]) {
   for (const rep of reports) {
     const [lng, lat] = wgs84ToGcj02(rep.lon, rep.lat);
-    const link = rep.url ? `<a href="${rep.url}" target="_blank" rel="noopener">${rep.source}</a>` : rep.source;
+    // Built as DOM rather than an HTML string: report fields are curated today, but the
+    // moment they come from anywhere else interpolating them would be script injection.
+    const body = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = rep.title;
+    body.append(title, document.createElement('br'));
+
+    const href = httpUrl(rep.url);
+    if (href) {
+      const a = document.createElement('a');
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = rep.source;
+      body.append(a);
+    } else {
+      body.append(rep.source);
+    }
+    body.append(` · ${new Date(rep.time).toLocaleString()}`);
+
     new maplibregl.Marker({ color: ['#7EB8FF', '#2E6BE6', '#0B2E8A'][rep.severity - 1] })
       .setLngLat([lng, lat])
-      .setPopup(new maplibregl.Popup().setHTML(
-        `<strong>${rep.title}</strong><br>${link} · ${new Date(rep.time).toLocaleString()}`,
-      ))
+      .setPopup(new maplibregl.Popup().setDOMContent(body))
       .addTo(map);
   }
 }

@@ -27,6 +27,7 @@ function applyStrings() {
 }
 
 const freshness = document.getElementById('freshness')!;
+const coverage = document.getElementById('coverage')!;
 freshness.textContent = t('loading');
 
 const elev = await fetchElevation();
@@ -100,6 +101,16 @@ try {
     && f.getDate() === now.getDate();
   const hm = `${String(f.getHours()).padStart(2, '0')}:${String(f.getMinutes()).padStart(2, '0')}`;
   freshness.textContent = `${t('updatedAt')} ${sameDay ? hm : `${f.getMonth() + 1}/${f.getDate()} ${hm}`}`;
+
+  // A grid point that was never fetched and one that reported no rain both draw as dry.
+  // The count of non-null points in the current hour is the only client-visible difference,
+  // so it is shown whenever the sweep left holes and hidden once the grid is complete.
+  const nowSlice = rain.precip[rain.nowIndex];
+  const total = nowSlice.reduce((n, row) => n + row.length, 0);
+  const covered = nowSlice.reduce((n, row) => n + row.filter((v) => v !== null).length, 0);
+  coverage.textContent = `${t('coverage')} ${covered}/${total}`;
+  coverage.hidden = covered >= total;
+
   draw();
 } catch (e) {
   console.error(e);
