@@ -69,8 +69,9 @@ export function mergeRainCache(
  * Delay between point requests. Caiyun refills this account's bucket at roughly
  * one request per 360 ms: a 120 ms stagger drew HTTP 429 on two of every three
  * points, in the same phase-locked lattice on every sweep, so those cells were
- * permanently empty. 450 ms clears the refill rate; a 182-point sweep takes
- * ~82 s, well inside the 30-minute refresh.
+ * permanently empty. 450 ms clears the refill rate; a 182-point sweep costs
+ * ~82 s of stagger plus request latency, ~2 min of wall time measured, well
+ * inside the 30-minute refresh.
  */
 const STAGGER_MS = 450;
 

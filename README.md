@@ -23,13 +23,21 @@ Production: `npm run build && npm start` → everything on :8787.
 Other env vars: `PORT` (default 8787), `RAIN_REFRESH_MINUTES` (default 30).
 Node 20+ (developed on 24). Tests: `npm test` and `npx tsc --noEmit`.
 
-The rain cache fills on the first sweep: 182 points at a 450 ms stagger, about
-two minutes. Until it lands `/api/rain` answers 503 and the page says
-暂无降雨数据. Caiyun rate-limits per account, and 450 ms is what stopped the
-limiter from carving a permanent hole in the grid — but a busy account still
-draws HTTP 429 on some points. Those cells simply keep their previous value
-and are refilled next sweep, so a partly-throttled sweep degrades instead of
-failing. If a whole sweep fails, the stale cache keeps being served.
+The rain cache fills on the first sweep: 182 points at a 450 ms stagger, which
+is ~82 s of stagger plus request latency — about **two minutes** of wall time
+measured. Until it lands, `/api/rain` answers 503 and the page says
+暂无降雨数据，请稍后刷新.
+
+Caiyun rate-limits per account, and 450 ms is what stopped the limiter from
+carving a permanent hole in the grid — but a busy account still draws HTTP 429
+on some points (57 of 182 on one observed sweep). On a **warm** cache those
+cells keep their previous value and are refilled next sweep, so a
+partly-throttled sweep degrades instead of failing. On the **first** sweep
+after a cold start there is no previous value, so a throttled point stays null
+and renders as *no rain* — indistinguishable from genuinely dry ground, not as
+a gap. Those cells fill in over the next few refresh cycles, so treat the first
+half-hour or so of a fresh deploy as incomplete rather than authoritative.
+If a whole sweep fails, the stale cache keeps being served.
 
 The −24 h history window self-accumulates over the first day of uptime: Caiyun
 returns now + 48 h and nothing else, so past hours exist only because this
@@ -50,10 +58,30 @@ same rate-limited token, and they do not share the cache.
 
 ## Curated reports
 
-Hand-edit `data/reports.json`; each entry:
+Hand-edit `data/reports.json`. It is a JSON array — `[]` when there is nothing
+to show. A complete entry, valid as written:
 
-    { "id": "unique", "lon": 121.47, "lat": 31.23, "severity": 1|2|3,
-      "title": "...", "source": "上海发布", "url": "optional", "time": "ISO" }
+```json
+[
+  {
+    "id": "2026-08-10-renmin-square",
+    "lon": 121.4694,
+    "lat": 31.2325,
+    "severity": 2,
+    "title": "人民广场地铁站出口积水",
+    "source": "上海发布",
+    "url": "https://weibo.com/...",
+    "time": "2026-08-10T03:00:00Z"
+  }
+]
+```
+
+`url` is the only optional field; everything else is required. `severity` is
+`1`, `2` or `3` (1 = minor, 3 = severe) and picks the marker colour;
+`time` is an ISO 8601 timestamp. Malformed JSON makes `/api/reports` unusable
+and the layer disappears **silently** — no error is shown in the UI — so
+validate the file (`node -e "JSON.parse(require('fs').readFileSync('data/reports.json'))"`)
+after editing.
 
 **Coordinates must be true WGS-84.** The app converts them to GCJ-02 itself
 for display, so a coordinate that is already GCJ-02 gets shifted twice and the
