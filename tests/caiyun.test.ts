@@ -1,11 +1,22 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchPointWeather } from '../server/caiyun.js';
 
+// Mirrors the real v2.6 payload's extra fields (verified via live probe): `nearest`
+// sits alongside `local` and diverged ~10x at the same point, and hourly entries
+// carry `probability`. Both are present so the assertions below pin the mapper's
+// narrowing rather than passing incidentally against a thinner fixture.
 const fakeResponse = {
   status: 'ok',
   result: {
-    realtime: { precipitation: { local: { intensity: 2.5 } } },
-    hourly: { precipitation: [{ datetime: '2026-08-10T08:00+08:00', value: 1.2 }] },
+    realtime: {
+      precipitation: {
+        local: { status: 'ok', datasource: 'radar', intensity: 2.5 },
+        nearest: { status: 'ok', intensity: 7.28, distance: 1000 },
+      },
+    },
+    hourly: {
+      precipitation: [{ datetime: '2026-08-10T08:00+08:00', value: 1.2, probability: 54 }],
+    },
   },
 };
 
