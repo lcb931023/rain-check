@@ -73,6 +73,7 @@ export function showCellPopup(
   series: Float32Array[],
   hours: string[],
   nowIndex: number,
+  displayIndex: number,
   cellIdx: number,
 ) {
   const cv = document.createElement('canvas');
@@ -80,23 +81,33 @@ export function showCellPopup(
   const ctx = cv.getContext('2d')!;
   const values = series.map((s) => s[cellIdx]);
   const max = Math.max(FLOOD_BANDS.severe, ...values);
+  const px = (i: number) => (i / (values.length - 1)) * 240;
+  const py = (v: number) => 78 - (v / max) * 70;
   ctx.strokeStyle = '#2E6BE6';
   ctx.beginPath();
   values.forEach((v, i) => {
-    const x = (i / (values.length - 1)) * 240;
-    const y = 78 - (v / max) * 70;
+    const x = px(i);
+    const y = py(v);
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
   ctx.stroke();
-  const nx = (nowIndex / (values.length - 1)) * 240;
+  const nx = px(nowIndex);
   ctx.strokeStyle = '#999';
   ctx.setLineDash([3, 3]);
   ctx.beginPath(); ctx.moveTo(nx, 0); ctx.lineTo(nx, 80); ctx.stroke();
 
-  const nowV = values[nowIndex];
-  const band = nowV >= FLOOD_BANDS.severe ? t('bandSevere') : nowV >= FLOOD_BANDS.possible ? t('bandPossible') : t('bandNone');
+  // Mark the hour the label describes, so its referent on the curve is visible.
+  ctx.fillStyle = '#0B2E8A';
+  ctx.beginPath();
+  ctx.arc(Math.min(237, Math.max(3, px(displayIndex))), py(values[displayIndex]), 3, 0, 2 * Math.PI);
+  ctx.fill();
+
+  const v = values[displayIndex];
+  const band = v >= FLOOD_BANDS.severe ? t('bandSevere') : v >= FLOOD_BANDS.possible ? t('bandPossible') : t('bandNone');
+  const d = new Date(hours[displayIndex]);
+  const label = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00 · ${band}`;
   const wrap = document.createElement('div');
-  wrap.append(Object.assign(document.createElement('div'), { textContent: band, style: 'font-weight:600' }), cv);
+  wrap.append(Object.assign(document.createElement('div'), { textContent: label, style: 'font-weight:600' }), cv);
   // maplibre's default popup maxWidth is 240px, which is the canvas width alone: without this
   // the last hours of the sparkline spill outside the popup's white box onto the map.
   new maplibregl.Popup({ maxWidth: '280px' }).setLngLat(gcjLngLat).setDOMContent(wrap).addTo(map);

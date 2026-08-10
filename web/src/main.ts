@@ -75,6 +75,9 @@ try {
   timeInput.disabled = false;
 
   mapHandle.map.on('click', (ev) => {
+    // A marker click reaches the map too, so without this a report marker would open its own
+    // popup and a cell popup for the ground beneath it, overlapping.
+    if ((ev.originalEvent.target as Element | null)?.closest?.('.maplibregl-marker')) return;
     // Invert: find nearest elevation cell. GCJ-02 offset in Shanghai is a few hundred
     // meters; for cell lookup (~280 m cells) invert by subtracting the local offset.
     const [glon, glat] = [ev.lngLat.lng, ev.lngLat.lat];
@@ -84,7 +87,10 @@ try {
     const xi = Math.round((wlon - elev.lons[0]) / (elev.lons[1] - elev.lons[0]));
     const yi = Math.round((wlat - elev.lats[0]) / (elev.lats[1] - elev.lats[0]));
     if (xi < 0 || xi >= elev.lons.length || yi < 0 || yi >= elev.lats.length) return;
-    showCellPopup(mapHandle.map, ev.lngLat, series, rain.hours, rain.nowIndex, yi * elev.lons.length + xi);
+    showCellPopup(
+      mapHandle.map, ev.lngLat, series, rain.hours,
+      rain.nowIndex, Number(timeInput.value), yi * elev.lons.length + xi,
+    );
   });
 
   const f = new Date(rain.fetchedAt);
