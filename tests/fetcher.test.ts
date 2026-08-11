@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gridAxes, mergeRainCache, sweep } from '../server/fetcher.js';
+import { gridAxes, mergeRainCache, needsBackfill, sweep } from '../server/fetcher.js';
 import type { PointWeather } from '../server/caiyun.js';
 import type { RainGrid } from '../shared/types.js';
 
@@ -15,6 +15,17 @@ function pw(realtime: number, hourlyValue: number): PointWeather {
     realtimeIntensity: realtime,
     hourly: Array.from({ length: 48 }, (_, i) => ({
       datetime: new Date(Date.UTC(2026, 7, 10, 6 + i)).toISOString(),
+      value: hourlyValue,
+    })),
+  };
+}
+
+/** A backfill-mode response: 48 hours starting 24h before `now` (covers -24h..+23h). */
+function pwBackfill(realtime: number, hourlyValue: number): PointWeather {
+  return {
+    realtimeIntensity: realtime,
+    hourly: Array.from({ length: 48 }, (_, i) => ({
+      datetime: new Date(Date.UTC(2026, 7, 9, 6 + i)).toISOString(),
       value: hourlyValue,
     })),
   };
@@ -63,6 +74,19 @@ describe('mergeRainCache', () => {
   it('returns null on total failure with no old cache, rather than an empty grid', () => {
     expect(mergeRainCache(null, [[null]], axes, now)).toBeNull();
   });
+  it('fills past hours from a backfill response on a cold start', () => {
+    const g = grid(mergeRainCache(null, [[pwBackfill(3, 2)]], axes, now));
+    expect(g.precip[0][0][0]).toBe(2); // -24h comes straight from the fetched series
+    expect(g.precip[g.nowIndex - 1][0][0]).toBe(2);
+    expect(g.precip[g.nowIndex][0][0]).toBe(3); // radar still wins the current hour
+    expect(g.precip[72][0][0]).toBeNull(); // beyond the fetched horizon: no data, not fake dry
+  });
+  it('prefers freshly fetched past hours over carried-forward cache', () => {
+    const old = mergeRainCache(null, [[pw(9, 1)]], axes, new Date('2026-08-10T04:30:00Z'));
+    const g = grid(mergeRainCache(old, [[pwBackfill(3, 2)]], axes, now));
+    const h = g.hours.indexOf(hourIso('2026-08-10T04:00:00Z'));
+    expect(g.precip[h][0][0]).toBe(2); // observed backfill beats the radar snapshot stored then
+  });
   it('updates the succeeded point while the failed one keeps old values', () => {
     const twoPoints = { lons: [121.0, 121.045], lats: [31.0] };
     const old = mergeRainCache(null, [[pw(9, 5), pw(9, 5)]], twoPoints, new Date('2026-08-10T04:30:00Z'));
@@ -75,6 +99,33 @@ describe('mergeRainCache', () => {
     expect(g.precip[g.nowIndex + 1][0][1]).toBe(5); // failed: old forecast, not overwritten
     expect(g.precip[past][0][0]).toBe(9); // both keep history regardless of this sweep
     expect(g.precip[past][0][1]).toBe(9);
+  });
+});
+
+describe('needsBackfill', () => {
+  it('is true with no cache at all', () => {
+    expect(needsBackfill(null, now)).toBe(true);
+  });
+  it('is true when the past-24h window is entirely null in the cache', () => {
+    // A forecast-mode grid fetched 30h ago: today's past-24h slots exist but hold no data.
+    const old = grid(mergeRainCache(null, [[pw(9, 1)]], axes, new Date('2026-08-09T00:30:00Z')));
+    expect(needsBackfill(old, now)).toBe(true);
+  });
+  it('is false when history is mostly present', () => {
+    // Backfilled at 04:30 → past hours populated; two hours later only 2/24 slots are new holes.
+    const old = grid(mergeRainCache(null, [[{
+      realtimeIntensity: 9,
+      hourly: Array.from({ length: 48 }, (_, i) => ({
+        datetime: new Date(Date.UTC(2026, 7, 9, 4 + i)).toISOString(),
+        value: 1,
+      })),
+    }]], axes, new Date('2026-08-10T04:30:00Z')));
+    expect(needsBackfill(old, now)).toBe(false);
+  });
+  it('is true when more than a quarter of past slots are null', () => {
+    // Forecast-mode cold start at 04:30 wrote no history at all except the current hour.
+    const old = grid(mergeRainCache(null, [[pw(9, 1)]], axes, new Date('2026-08-10T04:30:00Z')));
+    expect(needsBackfill(old, now)).toBe(true);
   });
 });
 
@@ -131,6 +182,27 @@ describe('sweep', () => {
     expect(await readdir(dir)).toEqual(['rain-grid.json']);
     expect(errors.mock.calls.at(-1)?.[0]).toBe('sweep failed entirely; serving stale cache');
     errors.mockRestore();
+  });
+
+  it('backfills on a cold start, then sweeps forward once history is present', async () => {
+    const dir = await freshDir();
+    const begins: (number | undefined)[] = [];
+    const fetchPoint = async (_lon: number, _lat: number, begin?: number) => {
+      begins.push(begin);
+      return begin === undefined ? pw(3, 1) : pwBackfill(3, 2);
+    };
+
+    await sweep({ fetchPoint, cacheDir: dir, staggerMs: 0, now: () => now });
+    // Cold start: every point asked for history starting 26h back (margin for Caiyun's
+    // habit of returning hours only from ~1-2h after `begin`).
+    expect(begins[0]).toBe(Math.floor(now.getTime() / 1000) - 26 * 3600);
+    expect(new Set(begins).size).toBe(1);
+    const g: RainGrid = JSON.parse(await readFile(join(dir, 'rain-grid.json'), 'utf8'));
+    expect(g.precip[0][0][0]).toBe(2); // -24h populated on the very first sweep
+
+    begins.length = 0;
+    await sweep({ fetchPoint, cacheDir: dir, staggerMs: 0, now: () => new Date('2026-08-10T07:30:00Z') });
+    expect(begins.every((b) => b === undefined)).toBe(true); // warm cache: forecast mode
   });
 
   it('skips a sweep that starts while another is still in flight', async () => {

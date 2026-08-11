@@ -35,6 +35,17 @@ The rain cache fills on the first sweep: 182 points at a 1.1 s stagger
 **four minutes** of wall time. Until it lands, `/api/rain` answers 503 and
 the page says 暂无降雨数据，请稍后刷新.
 
+Each sweep runs in one of two modes, chosen automatically from the cache
+(same 182 calls either way). When more than a quarter of the past day's
+values are missing — a cold start, or the server was off for a while — the
+sweep asks Caiyun for **history** (`begin=-26h`, which the free plan's
+48-hour cap turns into a −24 h…+24 h window), so a fresh deploy shows the
+full past day after its very first sweep. Otherwise it fetches **forecast**
+(now…+48 h) as usual. After a backfill sweep the +24 h…+48 h forecast tail
+is blank until the next sweep (up to 3 h at the default interval) extends
+it. Backfilled past hours are Caiyun's observed values and overwrite
+whatever the cache had recorded for those hours.
+
 Caiyun rate-limits per account; the 1.1 s stagger stays under this plan's
 QPS 1, but a busy account can still draw HTTP 429 on some points. On a
 **warm** cache those
@@ -47,10 +58,11 @@ default interval — the 数据覆盖 coverage line shows how complete the grid 
 so treat a fresh deploy's first sweeps as incomplete rather than authoritative.
 If a whole sweep fails, the stale cache keeps being served.
 
-The −24 h history window self-accumulates over the first day of uptime: Caiyun
-returns now + 48 h and nothing else, so past hours exist only because this
-server was running to record them. A fresh deploy shows past hours as blank
-until it has been up that long.
+Between sweeps, hours that have already passed keep the value fetched for
+them at the time (a forecast, or the radar reading if a sweep landed in that
+hour); they are only corrected to observations if a later backfill sweep
+runs. Points that stay rate-limited through a backfill sweep keep null
+history until those hours age out of the 73-hour window.
 
 API: `/api/health`, `/api/rain` (503 before the first sweep),
 `/api/elevation`, `/api/reports`.

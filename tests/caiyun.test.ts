@@ -29,6 +29,12 @@ describe('fetchPointWeather', () => {
     const url = (fetchFn.mock.calls[0][0] as string);
     expect(url).toContain('/TOKEN/121.47,31.23/weather');
     expect(url).toContain('hourlysteps=48');
+    expect(url).not.toContain('begin');
+  });
+  it('appends begin when given, for history backfill', async () => {
+    const fetchFn = vi.fn().mockResolvedValue({ ok: true, json: async () => fakeResponse });
+    await fetchPointWeather(121.47, 31.23, 'TOKEN', fetchFn as any, 1786000000);
+    expect(fetchFn.mock.calls[0][0] as string).toContain('begin=1786000000');
   });
   it('gives the request an abort deadline', async () => {
     const fetchFn = vi.fn().mockResolvedValue({ ok: true, json: async () => fakeResponse });

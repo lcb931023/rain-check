@@ -26,7 +26,10 @@ const hourStart = (d: Date) => {
 };
 
 /**
- * Merges one sweep's results into the previous grid. Pure.
+ * Merges one sweep's results into the previous grid. Pure and mode-agnostic:
+ * it uses whatever hours each point's series covers (forecast sweeps bring
+ * now..+47h, backfill sweeps -24h..+23h) and carries the rest from the old
+ * cache; hours neither covers stay null rather than pretending to be dry.
  * Returns `old` unchanged (by reference, possibly null) when no point succeeded,
  * so the caller can tell "nothing to write" from "new grid" — `fetchedAt` only
  * ever advances on a sweep that fetched at least one point.
@@ -53,12 +56,15 @@ export function mergeRainCache(
         const point = results[y][x];
         if (point) {
           if (t === nowIndex) return point.realtimeIntensity;
+          // Any hour the fetched series covers wins, past or future: backfilled past hours
+          // are observations, strictly better than the radar snapshots or stale forecasts
+          // the old cache carried for them.
           const fc = point.hourly.find((p) => hourStart(new Date(p.datetime)).toISOString() === h);
-          if (fc && t > nowIndex) return fc.value;
+          if (fc) return fc.value;
         }
         const oi = oldHourIdx.get(h);
         if (old && oi !== undefined) return old.precip[oi][y][x];
-        return point && t > nowIndex ? 0 : null;
+        return null;
       }),
     ),
   );
@@ -87,8 +93,39 @@ async function writeCacheAtomic(file: string, grid: RainGrid): Promise<void> {
   await rename(tmp, file);
 }
 
+/**
+ * Whether the next sweep should spend its one call per point on history
+ * (begin=-26h, window -24h..+24h) instead of forecast (now..+48h). True when
+ * more than a quarter of the coming window's past-hour slots are null in the
+ * cache — a cold start or a long outage. The threshold keeps a handful of
+ * chronically rate-limited points (~6% of the grid) from trapping every sweep
+ * in backfill mode, which would permanently cost the +24h..+48h forecast tail.
+ */
+export function needsBackfill(old: RainGrid | null, now: Date): boolean {
+  if (!old) return true;
+  const start = hourStart(new Date(now.getTime() - 24 * 3600_000));
+  let nulls = 0;
+  let total = 0;
+  for (let i = 0; i < 24; i++) {
+    const h = new Date(start.getTime() + i * 3600_000).toISOString();
+    const oi = old.hours.indexOf(h);
+    for (const row of oi === -1 ? [] : old.precip[oi]) {
+      for (const v of row) {
+        total++;
+        if (v === null) nulls++;
+      }
+    }
+    if (oi === -1) {
+      const pts = old.lats.length * old.lons.length;
+      total += pts;
+      nulls += pts;
+    }
+  }
+  return nulls / total > 0.25;
+}
+
 interface SweepOptions {
-  fetchPoint?: (lon: number, lat: number) => Promise<PointWeather>;
+  fetchPoint?: (lon: number, lat: number, begin?: number) => Promise<PointWeather>;
   cacheDir?: string;
   staggerMs?: number;
   now?: () => Date;
@@ -123,8 +160,19 @@ async function runSweep(opts: SweepOptions): Promise<void> {
   if (!fetchPoint) {
     const token = process.env.CAIYUN_API_TOKEN;
     if (!token) { console.warn('CAIYUN_API_TOKEN missing; fetcher idle'); return; }
-    fetchPoint = (lon, lat) => fetchPointWeather(lon, lat, token);
+    fetchPoint = (lon, lat, begin) => fetchPointWeather(lon, lat, token, undefined, begin);
   }
+
+  const file = join(cacheDir, 'rain-grid.json');
+  const old = await readCache(file);
+  // 26h rather than 24h: Caiyun returns hours starting only ~1-2h after `begin`
+  // (observed in the probe), so a -24h request would clip the window's oldest hours.
+  const begin = needsBackfill(old, now())
+    ? Math.floor(now().getTime() / 1000) - 26 * 3600
+    : undefined;
+  console.log(begin === undefined
+    ? 'sweep mode: forecast (now..+48h)'
+    : 'sweep mode: backfill (-24h..+24h); forecast tail extends next sweep');
 
   const axes = gridAxes(CONFIG);
   const results: (PointWeather | null)[][] = [];
@@ -132,7 +180,7 @@ async function runSweep(opts: SweepOptions): Promise<void> {
     const row: (PointWeather | null)[] = [];
     for (const lon of axes.lons) {
       try {
-        row.push(await fetchPoint(lon, lat));
+        row.push(await fetchPoint(lon, lat, begin));
       } catch (e) {
         console.error(`fetch failed @${lon},${lat}:`, (e as Error).message);
         row.push(null);
@@ -142,8 +190,6 @@ async function runSweep(opts: SweepOptions): Promise<void> {
     results.push(row);
   }
 
-  const file = join(cacheDir, 'rain-grid.json');
-  const old = await readCache(file);
   const merged = mergeRainCache(old, results, axes, now());
   if (!merged || merged === old) {
     // Cold start and outage read the same from inside the loop but not from outside it:
