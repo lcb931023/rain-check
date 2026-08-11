@@ -21,7 +21,7 @@ const tileUrl = (latSW: number, lonSW: number) => {
 };
 
 // S3 throttles many parallel block fetches, so retry and cap concurrency.
-const fetchPool = new Pool({ maxWorkers: 8 });
+const fetchPool = new Pool(8);
 
 async function loadTileOnce(latSW: number, lonSW: number) {
   const tiff = await fromUrl(tileUrl(latSW, lonSW), { retry: 5, pool: fetchPool });
