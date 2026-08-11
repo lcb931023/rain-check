@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gridAxes, mergeRainCache, needsBackfill, sweep } from '../server/fetcher.js';
+import { gridAxes, mergeRainCache, needsBackfill, shouldSweepOnStart, sweep } from '../server/fetcher.js';
 import type { PointWeather } from '../server/caiyun.js';
 import type { City } from '../shared/cities.js';
 import type { RainGrid } from '../shared/types.js';
@@ -145,6 +145,42 @@ describe('needsBackfill', () => {
   });
 });
 
+describe('shouldSweepOnStart', () => {
+  const freshDir = () => mkdtemp(join(tmpdir(), 'rain-start-'));
+  const args = (cacheDir: string, force = false) =>
+    ({ cacheDir, cities, refreshMinutes: 180, force, now: () => now });
+
+  it('sweeps when a city has no cache at all', async () => {
+    expect(await shouldSweepOnStart(args(await freshDir()))).toBe(true);
+  });
+
+  it('skips the startup sweep when every cache is younger than the refresh interval', async () => {
+    const dir = await freshDir();
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dir, cities, staggerMs: 0, now: () => now });
+    expect(await shouldSweepOnStart(args(dir))).toBe(false);
+  });
+
+  it('sweeps when the cache has aged past the refresh interval', async () => {
+    const dir = await freshDir();
+    const stale = new Date(now.getTime() - 200 * 60_000);
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dir, cities, staggerMs: 0, now: () => stale });
+    expect(await shouldSweepOnStart(args(dir))).toBe(true);
+  });
+
+  it('sweeps a fresh cache anyway under FETCH_ON_START', async () => {
+    const dir = await freshDir();
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dir, cities, staggerMs: 0, now: () => now });
+    expect(await shouldSweepOnStart(args(dir, true))).toBe(true);
+  });
+
+  it('sweeps when only some of the enabled cities are cached', async () => {
+    const dir = await freshDir();
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dir, cities, staggerMs: 0, now: () => now });
+    const two = { ...args(dir), cities: [testCity, city('uncached', 122.0)] };
+    expect(await shouldSweepOnStart(two)).toBe(true);
+  });
+});
+
 describe('sweep', () => {
   const freshDir = () => mkdtemp(join(tmpdir(), 'rain-cache-'));
   /** A failing sweep logs one line per point; silence them and return the recorded calls. */
@@ -262,6 +298,39 @@ describe('sweep', () => {
       now: () => now,
     });
     expect(await readdir(dir)).toEqual(['rain-grid-beta.json']);
+    errors.mockRestore();
+  });
+
+  it('only fetches points for the cities it is given', async () => {
+    const dir = await freshDir();
+    const lons: number[] = [];
+    await sweep({
+      fetchPoint: async (lon) => { lons.push(lon); return pw(3, 1); },
+      cacheDir: dir,
+      cities: [city('alpha', 121.0)],
+      staggerMs: 0,
+      now: () => now,
+    });
+    // One enabled city means one city's worth of calls, not the whole registry's.
+    expect(lons).toEqual([121.0]);
+    expect(await readdir(dir)).toEqual(['rain-grid-alpha.json']);
+  });
+
+  it('abandons a city after a run of consecutive failures', async () => {
+    const dir = await freshDir();
+    const errors = quietErrors();
+    // A 12-point city whose every request is rejected, as a throttled account behaves.
+    const wide: City = { ...city('wide'), bbox: { lonMin: 121, lonMax: 121.5, latMin: 31, latMax: 31.04 } };
+    let calls = 0;
+    await sweep({
+      fetchPoint: async () => { calls++; throw new Error('caiyun HTTP 429'); },
+      cacheDir: dir,
+      cities: [wide],
+      staggerMs: 0,
+      now: () => now,
+    });
+    expect(gridAxes(wide).lons.length * gridAxes(wide).lats.length).toBeGreaterThan(6);
+    expect(calls).toBe(6); // gave up rather than working through every doomed point
     errors.mockRestore();
   });
 

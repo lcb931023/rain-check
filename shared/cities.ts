@@ -14,31 +14,34 @@ const RAIN_STEP = { lon: 0.045, lat: 0.04 };
 const ELEV_STEP = { lon: 0.003, lat: 0.0025 };
 
 /**
- * Each bbox is ~0.6 deg lon x 0.5 deg lat around the urban core, which keeps every city
- * on the same grid dimensions (182 rain points, 201 x 201 cells) and so on the same
- * per-city quota cost. Bounds follow the built-up area, not the municipal boundary:
- * Shanghai's outer ring plus Pudong, Beijing's 6th Ring, Zhengzhou's urban districts
- * plus Zhengdong New District.
+ * Each bbox covers only the inner city — roughly Shanghai's Inner Ring plus Lujiazui and
+ * Xujiahui, Beijing inside the 3rd/4th Ring, Zhengzhou's Erqi core plus Zhengdong New
+ * District. About 0.2 deg on a side rather than the 0.6 x 0.5 these started as, which
+ * drops a sweep from 182 points per city to 20-25 and keeps every city inside a single
+ * 1-degree DEM tile.
+ *
+ * `latMax` for Beijing stops at 39.99 on purpose: 40.0 would spill into the N40 tile for
+ * one row of pixels and double that city's DEM download for nothing.
  */
 export const CITIES: City[] = [
   {
     id: 'shanghai',
     name: { zh: '上海', en: 'Shanghai' },
-    bbox: { lonMin: 121.2, lonMax: 121.8, latMin: 30.95, latMax: 31.45 },
+    bbox: { lonMin: 121.38, lonMax: 121.58, latMin: 31.15, latMax: 31.31 },
     rainStep: RAIN_STEP,
     elevStep: ELEV_STEP,
   },
   {
     id: 'beijing',
     name: { zh: '北京', en: 'Beijing' },
-    bbox: { lonMin: 116.1, lonMax: 116.7, latMin: 39.7, latMax: 40.2 },
+    bbox: { lonMin: 116.28, lonMax: 116.5, latMin: 39.84, latMax: 39.99 },
     rainStep: RAIN_STEP,
     elevStep: ELEV_STEP,
   },
   {
     id: 'zhengzhou',
     name: { zh: '郑州', en: 'Zhengzhou' },
-    bbox: { lonMin: 113.35, lonMax: 113.95, latMin: 34.5, latMax: 35.0 },
+    bbox: { lonMin: 113.56, lonMax: 113.78, latMin: 34.68, latMax: 34.84 },
     rainStep: RAIN_STEP,
     elevStep: ELEV_STEP,
   },

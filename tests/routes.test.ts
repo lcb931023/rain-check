@@ -33,8 +33,9 @@ describe('routes', () => {
     expect(res.body.map((c: any) => c.id)).toEqual(CITIES.map((c) => c.id));
     const shanghai = res.body.find((c: any) => c.id === 'shanghai');
     expect(shanghai.name.zh).toBe('上海');
-    expect(shanghai.center[0]).toBeCloseTo(121.5);
-    expect(shanghai.center[1]).toBeCloseTo(31.2);
+    // The inner-city bbox centres on People's Square.
+    expect(shanghai.center[0]).toBeCloseTo(121.48, 2);
+    expect(shanghai.center[1]).toBeCloseTo(31.23, 2);
   });
 
   it('GET /api/cities omits cities not enabled in this process', async () => {

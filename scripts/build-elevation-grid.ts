@@ -10,7 +10,7 @@
 import { writeFile } from 'node:fs/promises';
 import { fromUrl, Pool } from 'geotiff';
 import { computeDepression } from './tpi.js';
-import { CITIES, elevationFile, findCity, type City } from '../shared/cities.js';
+import { CITIES, elevationFile, findCity, type BBox, type City } from '../shared/cities.js';
 import type { ElevationGrid } from '../shared/types.js';
 
 const TPI_RADIUS = 4; // ~1.1km neighborhood at ~280m cells
@@ -24,22 +24,56 @@ const tileUrl = (latSW: number, lonSW: number) => {
 // S3 throttles many parallel block fetches, so retry and cap concurrency.
 const fetchPool = new Pool(8);
 
-async function loadTileOnce(latSW: number, lonSW: number) {
+/**
+ * Reads only the pixel window the bbox touches, not the whole 1°x1° tile. An inner-city
+ * box is ~3% of a tile's area, and since these COGs are fetched over HTTP range requests
+ * that is the difference between a ~100 MB download and a couple of MB. The window is
+ * grown by half a cell on each side because sample() averages over a cell's footprint,
+ * and clamped to the tile, so a bbox running off the tile edge reads to the edge.
+ */
+async function loadTileOnce(
+  latSW: number,
+  lonSW: number,
+  bbox: BBox,
+  step: { lon: number; lat: number },
+) {
   const tiff = await fromUrl(tileUrl(latSW, lonSW), { retry: 5, pool: fetchPool });
   const image = await tiff.getImage();
-  const raster = (await image.readRasters({ interleave: true })) as Float32Array;
   const [ox, oy] = image.getOrigin(); // top-left lon, lat
   const [rx, ry] = image.getResolution(); // ry is negative
-  const width = image.getWidth();
-  return { raster, ox, oy, rx, ry, width, height: image.getHeight() };
+  const tileW = image.getWidth();
+  const tileH = image.getHeight();
+
+  const clamp = (v: number, hi: number) => Math.min(hi, Math.max(0, v));
+  // rx > 0 (lon ascends with x), ry < 0 (lat descends with y), so latMax gives the low row.
+  const x0 = clamp(Math.floor((bbox.lonMin - step.lon / 2 - ox) / rx), tileW - 1);
+  const x1 = clamp(Math.ceil((bbox.lonMax + step.lon / 2 - ox) / rx), tileW - 1);
+  const y0 = clamp(Math.floor((bbox.latMax + step.lat / 2 - oy) / ry), tileH - 1);
+  const y1 = clamp(Math.ceil((bbox.latMin - step.lat / 2 - oy) / ry), tileH - 1);
+  const width = x1 - x0 + 1;
+  const height = y1 - y0 + 1;
+
+  // geotiff's window is [left, top, right, bottom) with the right/bottom edges exclusive.
+  const raster = (await image.readRasters({
+    interleave: true,
+    window: [x0, y0, x1 + 1, y1 + 1],
+  })) as Float32Array;
+  const pct = ((width * height) / (tileW * tileH) * 100).toFixed(1);
+  console.log(`  tile ${latSW}/${lonSW}: read ${width}x${height} px (${pct}% of tile)`);
+  return { raster, ox, oy, rx, ry, x0, y0, width, height };
 }
 
 // The initial header fetch can also fail transiently; geotiff's internal retry
 // does not fully cover it, so retry the whole tile load a few times.
-async function loadTile(latSW: number, lonSW: number) {
+async function loadTile(
+  latSW: number,
+  lonSW: number,
+  bbox: BBox,
+  step: { lon: number; lat: number },
+) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await loadTileOnce(latSW, lonSW);
+      return await loadTileOnce(latSW, lonSW, bbox, step);
     } catch (err) {
       if (attempt >= 5) throw err;
       console.warn(`tile ${latSW}/${lonSW} failed (${String(err)}); retrying ${attempt + 1}/5...`);
@@ -63,8 +97,10 @@ function sample(
   lat: number,
   STEP: { lon: number; lat: number },
 ): number {
-  const clampX = (v: number) => Math.min(t.width - 1, Math.max(0, v));
-  const clampY = (v: number) => Math.min(t.height - 1, Math.max(0, v));
+  // Pixel coords are absolute within the tile, but the raster only holds the window, so
+  // they are clamped to the window's bounds and shifted by its origin on the way in.
+  const clampX = (v: number) => Math.min(t.x0 + t.width - 1, Math.max(t.x0, v));
+  const clampY = (v: number) => Math.min(t.y0 + t.height - 1, Math.max(t.y0, v));
   // rx > 0 (lon ascends with x), ry < 0 (lat descends with y), so the north edge
   // gives the low row index.
   const x0 = clampX(Math.round((lon - STEP.lon / 2 - t.ox) / t.rx));
@@ -79,7 +115,7 @@ function sample(
       // values) and carry no void sentinel and no NaN — GDAL_NODATA is unset on both.
       // Other cities' tiles are not individually verified, so buildCity range-checks
       // its output instead; Copernicus voids would surface there as absurd elevations.
-      sum += t.raster[y * t.width + x];
+      sum += t.raster[(y - t.y0) * t.width + (x - t.x0)];
       n++;
     }
   }
@@ -113,7 +149,7 @@ async function buildCity(city: City): Promise<void> {
   const tiles = new Map<string, Awaited<ReturnType<typeof loadTile>>>();
   for (const key of keys) {
     const [lat, lon] = key.split('/').map(Number);
-    tiles.set(key, await loadTile(lat, lon));
+    tiles.set(key, await loadTile(lat, lon, bbox, STEP));
   }
 
   const elev = new Float32Array(lons.length * lats.length);

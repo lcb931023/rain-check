@@ -4,23 +4,26 @@ Estimates street flooding by combining Caiyun (彩云天气) rainfall data with
 terrain (Copernicus GLO-30). Flood levels are **model estimates, not
 measurements** — nothing here is gauged water depth.
 
-Three cities ship in the registry (`shared/cities.ts`), each a ~0.6° × 0.5°
-box around the urban core:
+Three cities ship in the registry (`shared/cities.ts`), each a ~0.2° box over
+the inner city only — not the whole municipality:
 
-| id | city | bbox |
-|----|------|------|
-| `shanghai` | 上海 Shanghai | 121.2–121.8 E, 30.95–31.45 N |
-| `beijing` | 北京 Beijing | 116.1–116.7 E, 39.7–40.2 N |
-| `zhengzhou` | 郑州 Zhengzhou | 113.35–113.95 E, 34.5–35.0 N |
+| id | city | bbox | covers | sweep |
+|----|------|------|--------|-------|
+| `shanghai` | 上海 Shanghai | 121.38–121.58 E, 31.15–31.31 N | Inner Ring, Lujiazui, Xujiahui | 5 × 5 = 25 pts |
+| `beijing` | 北京 Beijing | 116.28–116.50 E, 39.84–39.99 N | inside the 3rd/4th Ring | 5 × 4 = 20 pts |
+| `zhengzhou` | 郑州 Zhengzhou | 113.56–113.78 E, 34.68–34.84 N | Erqi core, Zhengdong New District | 5 × 5 = 25 pts |
 
-Every city uses the same grid steps, so each costs an identical 14 × 13 = 182
-Caiyun points and a 201 × 201 elevation grid (~280 m cells). The server sweeps
-each enabled city every 3 hours into `cache/rain-grid-<id>.json`, covering
-−24 h … +48 h in hourly steps. The browser interpolates that rain onto the
-city's elevation grid, runs a running-bucket model (runoff 0.8, drainage
-10 mm/h × the slider) and shades each cell on a transparent → blue ramp. The
-basemap is AMap, so every coordinate is converted WGS-84 → GCJ-02 before it is
-drawn.
+All three share grid steps: ~4.5 km between Caiyun points and ~280 m elevation
+cells (67 × 65 or so per city). The server sweeps each enabled city every 3
+hours into `cache/rain-grid-<id>.json`, covering −24 h … +48 h in hourly steps.
+The browser interpolates that rain onto the city's elevation grid, runs a
+running-bucket model (runoff 0.8, drainage 10 mm/h × the slider) and shades each
+cell on a transparent → blue ramp. The basemap is AMap, so every coordinate is
+converted WGS-84 → GCJ-02 before it is drawn.
+
+Keeping the boxes small is what makes the whole thing cheap: a full sweep of all
+three cities is 70 Caiyun calls, and each city fits inside a single 1° DEM tile.
+Widening a bbox costs quota on every sweep thereafter, so widen deliberately.
 
 The city is picked in the UI, remembered in `localStorage`, and overridable
 per-link with `?city=beijing` (the URL wins, so shared links open where they
@@ -37,31 +40,46 @@ run; nothing else is city-specific.
 
 Production: `npm run build && npm start` → everything on :8787.
 
-Other env vars: `PORT` (default 8787), `RAIN_REFRESH_MINUTES` (default 180),
-`CITIES` (default: all three; e.g. `CITIES=zhengzhou,shanghai` to sweep only
-those). An unknown id in `CITIES` aborts startup rather than quietly sweeping
-less. Cities left out are hidden from the UI and 404 from the API.
+Other env vars:
+
+- `PORT` — default 8787.
+- `RAIN_REFRESH_MINUTES` — default 180.
+- `CITIES` — default all three; `CITIES=zhengzhou,shanghai` sweeps only those,
+  and only their points are ever requested. An unknown id aborts startup rather
+  than quietly sweeping less. Cities left out are hidden from the UI and 404
+  from the API.
+- `FETCH_ON_START=1` — force a sweep the moment the server boots.
+
 Node 20+ (developed on 24). Tests: `npm test` and `npx tsc --noEmit`.
 
-**Quota budget — this is now 3× what it was.** The free Caiyun plan is a fixed
-pool of total calls (not a daily allowance) at QPS 1. One sweep costs 182 calls
-*per enabled city*, so all three cities cost 546 calls per sweep and, at the
-default 3-hour refresh, **~4,368 calls/day** (one city alone: ~1,456). Check
-剩余调用量 on your Caiyun console and do the math before leaving it running for
-days. Use `CITIES` to sweep only what you are actually watching, lower
-`RAIN_REFRESH_MINUTES` (e.g. 60) during an active storm when fresher data is
-worth the spend, and stop the server when you don't need the map.
+**The startup sweep is conditional.** `npm run dev` runs `tsx watch`, which
+restarts the server on every file save; a sweep on every start would turn each
+save into a full grid of Caiyun calls and is the easiest way to drain the quota.
+So at boot the server sweeps only if some enabled city's cache is missing or
+already older than `RAIN_REFRESH_MINUTES` — otherwise it logs `startup sweep
+skipped` and waits for the first interval. `FETCH_ON_START=1` overrides that
+and always sweeps, which is what you want when testing a change to the fetcher.
+
+**Quota budget.** The free Caiyun plan is a fixed pool of total calls (not a
+daily allowance) at QPS 1. A sweep of all three cities is 70 calls — about
+**560 calls/day** at the default 3-hour refresh. Check 剩余调用量 on your Caiyun
+console before leaving it running for days. Use `CITIES` to watch only what
+matters, lower `RAIN_REFRESH_MINUTES` (e.g. 60) during an active storm when
+fresher data is worth the spend, and stop the server when you don't need the map.
 
 Cities are swept one after another, never concurrently — they share one
-account's QPS-1 budget. Each city's cache fills on its first sweep: 182 points
-at a 1.1 s stagger is ~3.3 min of stagger plus request latency, about **four
-minutes** of wall time per city, so a cold start with all three enabled takes
-~12 minutes before the last city has data. Until a city's cache lands,
-`/api/rain?city=<id>` answers 503 and its page says 暂无降雨数据，请稍后刷新.
-A city whose sweep fails entirely does not stop the others.
+account's QPS-1 budget. A full sweep is ~77 s of stagger plus request latency,
+so a cold start has every city populated in a couple of minutes. Until a city's
+cache lands, `/api/rain?city=<id>` answers 503 and its page says
+暂无降雨数据，请稍后刷新. A city whose sweep fails entirely does not stop the others.
+
+If six points in a row fail, that city's sweep is abandoned rather than working
+through the rest. When the account is rate-limited or out of quota every
+remaining point fails too, so pushing on only spends minutes proving it; the
+skipped points stay null and keep whatever the cache already held.
 
 Each city's sweep runs in one of two modes, chosen independently from that
-city's own cache (same 182 calls either way). When more than a quarter of the
+city's own cache (the same one call per point either way). When more than a quarter of the
 past day's values are missing — a cold start, or the server was off for a
 while — the sweep asks Caiyun for **history** (`begin=-26h`, which the free
 plan's 48-hour cap turns into a −24 h…+24 h window), so a fresh deploy shows
@@ -149,6 +167,13 @@ Still curate this file by hand rather than wiring it to a feed.
     npm run build-elevation -- beijing     # one city
     npm run build-elevation -- all         # every city in the registry
 
-Downloads the Copernicus DEM tiles the city's bbox touches (~100 MB each; the
-tiles needed are derived from the bbox, so a new city needs no code change).
-The outputs are committed, so this is rarely needed.
+Reads the Copernicus DEM tiles the city's bbox touches. The tiles are derived
+from the bbox, so a new city needs no code change, and only the pixel window the
+bbox covers is fetched over HTTP range requests — an inner-city box is ~3% of a
+1° tile, which is the difference between a ~100 MB download and a couple of MB.
+All three cities rebuild in about a minute. The outputs are committed, so this
+is only needed when a bbox or step changes.
+
+Each build range-checks its output and fails rather than writing a grid, so a
+tile carrying Copernicus void sentinels cannot quietly become plausible-looking
+terrain.

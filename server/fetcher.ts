@@ -83,6 +83,13 @@ export function mergeRainCache(
  */
 const STAGGER_MS = 1100;
 
+/**
+ * Consecutive failed points before a city's sweep gives up. Sized below the ~20-25 points
+ * an inner-city grid holds, so a genuinely throttled account is abandoned early, while the
+ * scattered one-off 429s that a warm cache absorbs never reach it.
+ */
+const MAX_CONSECUTIVE_FAILURES = 6;
+
 async function readCache(file: string): Promise<RainGrid | null> {
   try { return JSON.parse(await readFile(file, 'utf8')); } catch { return null; }
 }
@@ -202,14 +209,26 @@ async function sweepCity(city: City, opts: {
 
   const axes = gridAxes(city);
   const results: (PointWeather | null)[][] = [];
+  // When the account is rate-limited or out of quota every remaining point fails too, so
+  // a run of consecutive failures means the rest of this city is doomed. Giving up leaves
+  // those points null (they keep their cached values) instead of spending minutes and a
+  // fresh burst of rejected requests proving the same thing.
+  let consecutiveFailures = 0;
+  let abandoned = false;
   for (const lat of axes.lats) {
     const row: (PointWeather | null)[] = [];
     for (const lon of axes.lons) {
+      if (abandoned) { row.push(null); continue; }
       try {
         row.push(await fetchPoint(lon, lat, begin));
+        consecutiveFailures = 0;
       } catch (e) {
         console.error(`[${city.id}] fetch failed @${lon},${lat}:`, (e as Error).message);
         row.push(null);
+        if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          abandoned = true;
+          console.error(`[${city.id}] ${consecutiveFailures} consecutive failures; abandoning the rest of this city`);
+        }
       }
       await new Promise((r) => setTimeout(r, staggerMs));
     }
@@ -227,7 +246,47 @@ async function sweepCity(city: City, opts: {
   console.log(`[${city.id}] rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
 }
 
+/**
+ * Whether to sweep immediately at startup, rather than waiting out the first interval.
+ * True when any enabled city's cache is missing or already older than the refresh
+ * interval — i.e. when a sweep was due anyway — and always true under FETCH_ON_START.
+ */
+export async function shouldSweepOnStart(opts: {
+  cacheDir: string;
+  cities: City[];
+  refreshMinutes: number;
+  force: boolean;
+  now?: () => Date;
+}): Promise<boolean> {
+  if (opts.force) return true;
+  const now = (opts.now ?? (() => new Date()))();
+  for (const city of opts.cities) {
+    const cached = await readCache(join(opts.cacheDir, rainCacheFile(city.id)));
+    if (!cached) return true;
+    const ageMinutes = (now.getTime() - new Date(cached.fetchedAt).getTime()) / 60_000;
+    if (!(ageMinutes < opts.refreshMinutes)) return true; // NaN fetchedAt counts as due
+  }
+  return false;
+}
+
 export function startFetcherLoop(): void {
-  sweep().catch((e) => console.error('sweep error:', e));
+  // `npm run dev` runs tsx watch, which restarts the server on every file save. An
+  // unconditional startup sweep therefore turns each save into a full grid of Caiyun
+  // calls against a fixed lifetime pool, which is the easiest way to drain it; so the
+  // startup sweep is skipped while every city's cache is still fresh.
+  shouldSweepOnStart({
+    cacheDir: CONFIG.cacheDir,
+    cities: CONFIG.cities,
+    refreshMinutes: CONFIG.refreshMinutes,
+    force: CONFIG.fetchOnStart,
+  })
+    .then((due) => {
+      if (!due) {
+        console.log('startup sweep skipped: every city cache is fresh (FETCH_ON_START=1 to force)');
+        return;
+      }
+      return sweep().catch((e) => console.error('sweep error:', e));
+    })
+    .catch((e) => console.error('startup sweep check failed:', e));
   setInterval(() => sweep().catch((e) => console.error('sweep error:', e)), CONFIG.refreshMinutes * 60_000);
 }
