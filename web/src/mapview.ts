@@ -2,12 +2,37 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { wgs84ToGcj02 } from './gcj02.js';
 import { FLOOD_BANDS } from './render.js';
+import { contourFeatures, drawElevationCanvas, elevationScale } from './elevation.js';
 import { t } from './strings.js';
 import type { ElevationGrid, Report } from '../../shared/types.js';
 
 const AMAP_TILES = [1, 2, 3, 4].map(
   (i) => `https://webrd0${i}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}`,
 );
+
+type Quad = [[number, number], [number, number], [number, number], [number, number]];
+
+/**
+ * A canvas source with animate:false only re-uploads its texture when prepare() sees
+ * resize || _playing, so triggerRepaint() alone would re-render the stale texture — and a
+ * layer that starts hidden never gets that first upload at all, so revealing it later
+ * would show nothing. play()+pause() runs prepare() once, synchronously, with _playing set.
+ */
+function nudgeCanvasSource(map: maplibregl.Map, id: string): void {
+  const source = map.getSource(id) as maplibregl.CanvasSource | undefined;
+  if (source) { source.play(); source.pause(); }
+}
+
+/** A world-sized rectangle with the covered area punched out of it, for the outside scrim. */
+function coverageMask(quad: Quad): GeoJSON.Feature<GeoJSON.Polygon> {
+  const world: [number, number][] = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
+  return {
+    type: 'Feature',
+    properties: {},
+    // Second ring is a hole: opposite winding to the first, per the GeoJSON spec.
+    geometry: { type: 'Polygon', coordinates: [world, [...quad, quad[0]]] },
+  };
+}
 
 export function initMap(container: HTMLElement, elev: ElevationGrid, center: [number, number]) {
   const map = new maplibregl.Map({
@@ -27,30 +52,119 @@ export function initMap(container: HTMLElement, elev: ElevationGrid, center: [nu
   canvas.width = elev.lons.length;
   canvas.height = elev.lats.length;
 
+  // The terrain tint shares the flood layer's geometry, so it gets its own canvas of the
+  // same size rather than sharing one: both are on screen at once when the toggle is on.
+  const elevCanvas = document.createElement('canvas');
+  elevCanvas.width = elev.lons.length;
+  elevCanvas.height = elev.lats.length;
+  const scale = elevationScale(elev.elevation);
+  drawElevationCanvas(elevCanvas.getContext('2d')!, elev.elevation, elevCanvas.width, elevCanvas.height, scale);
+
   const dLon = elev.lons[1] - elev.lons[0];
   const dLat = elev.lats[1] - elev.lats[0];
   const w = elev.lons[0] - dLon / 2, e = elev.lons[elev.lons.length - 1] + dLon / 2;
   const s = elev.lats[0] - dLat / 2, n = elev.lats[elev.lats.length - 1] + dLat / 2;
+  // Canvas sources want exactly four corners, clockwise from the top left.
+  const quad: [[number, number], [number, number], [number, number], [number, number]] =
+    [wgs84ToGcj02(w, n), wgs84ToGcj02(e, n), wgs84ToGcj02(e, s), wgs84ToGcj02(w, s)];
 
   map.on('load', () => {
-    map.addSource('flood', {
-      type: 'canvas',
-      canvas,
-      animate: false,
-      coordinates: [wgs84ToGcj02(w, n), wgs84ToGcj02(e, n), wgs84ToGcj02(e, s), wgs84ToGcj02(w, s)],
+    // Added before the flood layer so terrain reads as context underneath the data.
+    map.addSource('elevation', { type: 'canvas', canvas: elevCanvas, animate: false, coordinates: quad });
+    map.addLayer({
+      id: 'elevation',
+      type: 'raster',
+      source: 'elevation',
+      layout: { visibility: 'none' },
+      paint: { 'raster-resampling': 'linear', 'raster-opacity': 1 },
     });
+
+    map.addSource('contours', {
+      type: 'geojson',
+      data: contourFeatures(elev, scale, (lon, lat) => wgs84ToGcj02(lon, lat)),
+    });
+    map.addLayer({
+      id: 'contours',
+      type: 'line',
+      source: 'contours',
+      layout: { visibility: 'none', 'line-join': 'round' },
+      paint: {
+        'line-color': 'rgba(60, 40, 20, 0.75)',
+        // Every 5th contour is heavier so they can be counted against the legend's interval.
+        'line-width': ['case', ['get', 'major'], 1.6, 0.7],
+      },
+    });
+
+    map.addSource('flood', { type: 'canvas', canvas, animate: false, coordinates: quad });
     map.addLayer({ id: 'flood', type: 'raster', source: 'flood', paint: { 'raster-resampling': 'linear' } });
+
+    // Ground outside the elevation grid is dimmed rather than left plain. The model has no
+    // terrain there, so an undimmed basemap would read as "no flooding here" when it means
+    // "not modelled here" — the same ambiguity the coverage counter exists to resolve.
+    map.addSource('coverage', { type: 'geojson', data: coverageMask(quad) });
+    map.addLayer({
+      id: 'coverage-scrim',
+      type: 'fill',
+      source: 'coverage',
+      paint: { 'fill-color': '#0f172a', 'fill-opacity': 0.16 },
+    });
+
+    map.addSource('coverage-edge', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: [...quad, quad[0]] },
+      },
+    });
+    // A soft light halo under a fine dashed line, so the edge stays legible over both the
+    // pale streets inside and the dimmed ground outside without looking like a road.
+    map.addLayer({
+      id: 'coverage-edge-halo',
+      type: 'line',
+      source: 'coverage-edge',
+      layout: { 'line-join': 'round' },
+      paint: { 'line-color': '#ffffff', 'line-width': 4, 'line-blur': 2, 'line-opacity': 0.6 },
+    });
+    map.addLayer({
+      id: 'coverage-edge',
+      type: 'line',
+      source: 'coverage-edge',
+      layout: { 'line-join': 'round' },
+      paint: {
+        'line-color': '#1e293b',
+        'line-width': 1.4,
+        'line-opacity': 0.8,
+        'line-dasharray': [4, 3],
+      },
+    });
   });
+
+  const setElevationVisible = (on: boolean) => {
+    const apply = () => {
+      for (const id of ['elevation', 'contours']) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+      }
+      // The tint layer starts hidden, so its canvas texture was never uploaded; without
+      // this the first time it is switched on it draws nothing until some other event
+      // happens to force a redraw.
+      if (on) { nudgeCanvasSource(map, 'elevation'); map.triggerRepaint(); }
+    };
+    // Gate on the layers themselves, not on isStyleLoaded(): that returns false whenever
+    // any source is still fetching, which for a raster basemap is most of the time. Using
+    // it here deferred a mid-session toggle to a 'load' event that had already fired, so
+    // the click did nothing at all. The layers existing is the real precondition.
+    if (map.getLayer('elevation')) apply();
+    else map.once('load', apply);
+  };
 
   return {
     map,
     canvas,
-    // A canvas source with animate:false only re-uploads its texture when prepare() sees
-    // resize || _playing, so triggerRepaint() alone would re-render the stale texture.
-    // play()+pause() runs prepare() once, synchronously, with _playing set.
+    elevationScale: scale,
+    setElevationVisible,
     repaint: () => {
-      const s = map.getSource('flood') as maplibregl.CanvasSource | undefined;
-      if (s) { s.play(); s.pause(); }
+      nudgeCanvasSource(map, 'flood');
       map.triggerRepaint();
     },
   };

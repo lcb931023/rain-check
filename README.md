@@ -25,6 +25,29 @@ Keeping the boxes small is what makes the whole thing cheap: a full sweep of all
 three cities is 70 Caiyun calls, and each city fits inside a single 1° DEM tile.
 Widening a bbox costs quota on every sweep thereafter, so widen deliberately.
 
+The modelled area is drawn on the map: ground outside it is dimmed and the edge
+is marked with a dashed boundary. Outside that line there is no terrain data, so
+an undimmed basemap there would read as "no flooding" when it means "not
+modelled" — the same ambiguity the 数据覆盖 counter exists to resolve.
+
+## Terrain view
+
+A checkbox overlays the elevation the flood model actually runs on: a
+hypsometric tint under contour lines, with every 5th contour drawn heavier so
+they can be counted. It is the quickest way to see why water is predicted to
+collect where it does.
+
+Both the colour ramp and the contour interval are derived in the browser from
+the loaded grid, not configured per city, because the cities differ by an order
+of magnitude — Shanghai spans ~8 m, Beijing ~22 m, Zhengzhou ~67 m, and one
+fixed ramp would render Shanghai as a single flat colour. A new city therefore
+needs no styling work.
+
+The ramp clips to the 2nd/98th percentiles and the legend marks the clipped ends
+`−`/`+`. This is a *surface* model, so a cluster of towers sits in the data as a
+spike that would otherwise squash the whole city into the bottom of the ramp.
+Contours still span the true range, so high ground keeps its lines.
+
 The city is picked in the UI, remembered in `localStorage`, and overridable
 per-link with `?city=beijing` (the URL wins, so shared links open where they
 say). Switching cities reloads the page.

@@ -1,6 +1,7 @@
 import './style.css';
 import { initMap, addReports, showCellPopup } from './mapview.js';
 import { drawFloodCanvas, floodColor, FLOOD_BANDS } from './render.js';
+import { RAMP, rampColor } from './elevation.js';
 import { fetchCities, fetchElevation, fetchRain, fetchReports } from './api.js';
 import { wgs84ToGcj02 } from './gcj02.js';
 import { precomputeCellWeights } from './interp.js';
@@ -8,6 +9,28 @@ import { computeFloodSeries } from './model.js';
 import { t, getLang, setLang, setCityName } from './strings.js';
 
 const citySelect = document.getElementById('city') as HTMLSelectElement;
+const elevToggle = document.getElementById('showElevation') as HTMLInputElement;
+const elevLegend = document.getElementById('elevLegend')!;
+
+/**
+ * Built from the scale derived from this city's grid, so the numbers on it are the
+ * numbers actually being drawn — the ramp ends are the percentile clip, not the extremes,
+ * and are marked as such when terrain runs past them.
+ */
+function renderElevationLegend() {
+  const s = mapHandle.elevationScale;
+  const unit = t('elevationUnit');
+  const bar = RAMP.map(([stop]) => `rgb(${rampColor(stop).join(',')}) ${stop * 100}%`).join(', ');
+  const fmt = (v: number) => (s.max - s.min < 20 ? v.toFixed(1) : Math.round(v).toString());
+  elevLegend.innerHTML = '';
+  elevLegend.insertAdjacentHTML('beforeend', `
+    <div class="ramp" style="background: linear-gradient(to right, ${bar})"></div>
+    <div class="ramp-labels">
+      <span>${fmt(s.lo)}${s.lo > s.min ? '−' : ''}${unit}</span>
+      <span>${fmt(s.hi)}${s.hi < s.max ? '+' : ''}${unit}</span>
+    </div>
+    <p class="hint">${t('contourInterval')} ${s.interval}${unit}</p>`);
+}
 
 function applyStrings() {
   document.querySelectorAll<HTMLElement>('[data-s]').forEach((el) => {
@@ -17,6 +40,7 @@ function applyStrings() {
   document.getElementById('lang')!.textContent = t('langToggle');
   // Option labels are city names, which are themselves localized.
   for (const opt of citySelect.options) opt.textContent = cities.find((c) => c.id === opt.value)!.name[getLang()];
+  renderElevationLegend();
   const legend = document.getElementById('legend')!;
   legend.innerHTML = '';
   for (const [label, v] of [
@@ -60,6 +84,18 @@ document.getElementById('lang')!.addEventListener('click', () => {
   setLang(getLang() === 'zh' ? 'en' : 'zh');
   applyStrings();
 });
+
+// Remembered like the language and city, so an inspection session survives a reload.
+elevToggle.checked = localStorage.getItem('showElevation') === '1';
+const applyElevation = () => {
+  mapHandle.setElevationVisible(elevToggle.checked);
+  elevLegend.hidden = !elevToggle.checked;
+};
+elevToggle.addEventListener('change', () => {
+  localStorage.setItem('showElevation', elevToggle.checked ? '1' : '0');
+  applyElevation();
+});
+applyElevation();
 
 // Curated reports do not depend on the rain grid, so they are wired above the try block:
 // a rain outage must not take the reports layer down with it.
