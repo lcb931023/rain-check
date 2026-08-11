@@ -48,6 +48,31 @@ The ramp clips to the 2nd/98th percentiles and the legend marks the clipped ends
 spike that would otherwise squash the whole city into the bottom of the ramp.
 Contours still span the true range, so high ground keeps its lines.
 
+### The contour detail handle
+
+A slider (1–4) trades speed for finer contours, doing two things at once:
+
+1. **More levels.** It raises the contour budget, so the same nice-step ladder
+   lands a rung or two finer — Shanghai's 2 m becomes 1 m, then 0.5 m. This is
+   real added information: those levels were always in the data.
+2. **Smoother lines.** It bilinearly upsamples the grid before contouring, so
+   the extra levels do not come out as stair-steps around each ~280 m cell.
+
+Only the first adds information. The upsampling **interpolates and cannot
+recover detail the ~280 m sampling averaged away**, which the legend says
+outright once the slider leaves 1. Genuinely finer terrain means a smaller
+`elevStep` and a rebuild — a data change, not a view setting.
+
+The ladder saturates deliberately: on Shanghai, detail 3 and 4 both settle at
+0.5 m (~33 lines across 8 m of relief) because a finer interval would be clutter
+rather than insight. Detail 4 still smooths further.
+
+Recomputing is driven by the slider's `change` (pointer release), not `input`,
+and takes ~14 ms at detail 1 and ~250 ms at detail 4. Contouring walks cells on
+the outside and slices to the levels each cell's corner range straddles; the
+naive cells × levels loop was ~8× slower and made the top of the slider feel
+broken.
+
 The city is picked in the UI, remembered in `localStorage`, and overridable
 per-link with `?city=beijing` (the URL wins, so shared links open where they
 say). Switching cities reloads the page.

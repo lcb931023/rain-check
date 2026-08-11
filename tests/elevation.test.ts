@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { contourFeatures, elevationScale, rampColor, MAJOR_EVERY } from '../web/src/elevation.js';
+import {
+  contourFeatures, elevationScale, rampColor, supersample, MAJOR_EVERY, MAX_DETAIL,
+} from '../web/src/elevation.js';
 import type { ElevationGrid } from '../shared/types.js';
 
 const identity = (lon: number, lat: number): [number, number] => [lon, lat];
@@ -50,6 +52,93 @@ describe('elevationScale', () => {
     expect(s.min).toBe(7);
     expect(s.max).toBe(7);
     expect(s.levels.every((v) => Number.isFinite(v))).toBe(true);
+  });
+});
+
+describe('contour detail', () => {
+  const shanghaiLike = Array.from({ length: 200 }, (_, i) => (i / 199) * 16.4);
+
+  it('picks a finer interval as detail rises, never a coarser one', () => {
+    let previous = Infinity;
+    for (let d = 1; d <= MAX_DETAIL; d++) {
+      const { interval } = elevationScale(shanghaiLike, d);
+      expect(interval).toBeLessThanOrEqual(previous);
+      previous = interval;
+    }
+    expect(elevationScale(shanghaiLike, MAX_DETAIL).interval)
+      .toBeLessThan(elevationScale(shanghaiLike, 1).interval);
+  });
+
+  it('yields strictly more contour levels at higher detail', () => {
+    const low = elevationScale(shanghaiLike, 1).levels.length;
+    const high = elevationScale(shanghaiLike, MAX_DETAIL).levels.length;
+    expect(high).toBeGreaterThan(low);
+  });
+
+  it('treats detail 1 and an absent argument identically', () => {
+    expect(elevationScale(shanghaiLike, 1)).toEqual(elevationScale(shanghaiLike));
+  });
+});
+
+describe('supersample', () => {
+  it('returns the grid untouched at factor 1', () => {
+    const g = ramp(4, 4, 10);
+    expect(supersample(g, 1)).toBe(g);
+  });
+
+  it('expands the grid without moving its edges', () => {
+    const g = ramp(4, 5, 10);
+    const s = supersample(g, 3);
+    expect(s.lons.length).toBe((4 - 1) * 3 + 1);
+    expect(s.lats.length).toBe((5 - 1) * 3 + 1);
+    expect(s.lons[0]).toBeCloseTo(g.lons[0], 9);
+    expect(s.lons[s.lons.length - 1]).toBeCloseTo(g.lons[g.lons.length - 1], 9);
+    expect(s.lats[s.lats.length - 1]).toBeCloseTo(g.lats[g.lats.length - 1], 9);
+  });
+
+  it('reproduces the original samples exactly at the original positions', () => {
+    const g = ramp(4, 4, 7);
+    const f = 4;
+    const s = supersample(g, f);
+    for (let y = 0; y < g.lats.length; y++) {
+      for (let x = 0; x < g.lons.length; x++) {
+        expect(s.elevation[y * f * s.lons.length + x * f]).toBeCloseTo(g.elevation[y * g.lons.length + x], 9);
+      }
+    }
+  });
+
+  it('interpolates rather than inventing: no value exceeds the original range', () => {
+    // Interpolation is bounded by its inputs, so smoothing cannot conjure new peaks —
+    // which is the honest limit of what the detail handle does.
+    const g: ElevationGrid = {
+      lons: [0, 1, 2], lats: [0, 1, 2],
+      elevation: [0, 9, 3, 4, 1, 8, 2, 7, 5], depression: Array(9).fill(1),
+    };
+    const s = supersample(g, 4);
+    const lo = Math.min(...g.elevation);
+    const hi = Math.max(...g.elevation);
+    for (const v of s.elevation) {
+      expect(v).toBeGreaterThanOrEqual(lo - 1e-9);
+      expect(v).toBeLessThanOrEqual(hi + 1e-9);
+    }
+  });
+
+  it('keeps a plane exactly planar, so contours stay evenly spaced', () => {
+    const s = supersample(ramp(4, 4, 10), 2);
+    // Row j of the upsampled plane must read j/2 * 10.
+    for (let j = 0; j < s.lats.length; j++) {
+      expect(s.elevation[j * s.lons.length]).toBeCloseTo((j / 2) * 10, 9);
+    }
+  });
+
+  it('produces smoother contours: more vertices for the same level', () => {
+    const g = ramp(6, 6, 10);
+    const scale = elevationScale(g.elevation);
+    const coarse = contourFeatures(g, scale, identity);
+    const fine = contourFeatures(supersample(g, 4), scale, identity);
+    const count = (fc: GeoJSON.FeatureCollection) =>
+      fc.features.reduce((n, f) => n + (f.geometry as GeoJSON.MultiLineString).coordinates.length, 0);
+    expect(count(fine)).toBeGreaterThan(count(coarse));
   });
 });
 

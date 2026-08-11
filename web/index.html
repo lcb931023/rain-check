@@ -20,7 +20,12 @@
     <p class="hint" data-s="legendDisclaimer"></p>
     <p class="hint coverage-note"><i></i><span data-s="coverageNote"></span></p>
     <label class="check"><input id="showElevation" type="checkbox" /><span data-s="showElevation"></span></label>
-    <div id="elevLegend" hidden></div>
+    <div id="elevPanel" hidden>
+      <div id="elevLegend"></div>
+      <label class="detail"><span data-s="contourDetail"></span>
+        <input id="contourDetail" type="range" min="1" max="4" step="1" value="1" />
+      </label>
+    </div>
     <p id="freshness"></p>
     <p id="coverage" class="hint" hidden></p>
     <button id="lang"></button>

@@ -10,7 +10,9 @@ import { t, getLang, setLang, setCityName } from './strings.js';
 
 const citySelect = document.getElementById('city') as HTMLSelectElement;
 const elevToggle = document.getElementById('showElevation') as HTMLInputElement;
+const elevPanel = document.getElementById('elevPanel')!;
 const elevLegend = document.getElementById('elevLegend')!;
+const detailInput = document.getElementById('contourDetail') as HTMLInputElement;
 
 /**
  * Built from the scale derived from this city's grid, so the numbers on it are the
@@ -22,6 +24,9 @@ function renderElevationLegend() {
   const unit = t('elevationUnit');
   const bar = RAMP.map(([stop]) => `rgb(${rampColor(stop).join(',')}) ${stop * 100}%`).join(', ');
   const fmt = (v: number) => (s.max - s.min < 20 ? v.toFixed(1) : Math.round(v).toString());
+  // The interval comes from the contour scale, which the detail handle changes; the ramp
+  // ends come from the base scale, which it does not.
+  const smoothed = Number(detailInput.value) > 1;
   elevLegend.innerHTML = '';
   elevLegend.insertAdjacentHTML('beforeend', `
     <div class="ramp" style="background: linear-gradient(to right, ${bar})"></div>
@@ -29,7 +34,8 @@ function renderElevationLegend() {
       <span>${fmt(s.lo)}${s.lo > s.min ? '−' : ''}${unit}</span>
       <span>${fmt(s.hi)}${s.hi < s.max ? '+' : ''}${unit}</span>
     </div>
-    <p class="hint">${t('contourInterval')} ${s.interval}${unit}</p>`);
+    <p class="hint">${t('contourInterval')} ${contourInterval}${unit}</p>
+    ${smoothed ? `<p class="hint caveat">${t('contourSmoothed')}</p>` : ''}`);
 }
 
 function applyStrings() {
@@ -78,6 +84,7 @@ citySelect.addEventListener('change', () => {
 const elev = await fetchElevation(city.id);
 const mapHandle = initMap(document.getElementById('map')!, elev, city.center);
 const ctx = mapHandle.canvas.getContext('2d')!;
+let contourInterval = mapHandle.elevationScale.interval;
 applyStrings();
 
 document.getElementById('lang')!.addEventListener('click', () => {
@@ -87,15 +94,26 @@ document.getElementById('lang')!.addEventListener('click', () => {
 
 // Remembered like the language and city, so an inspection session survives a reload.
 elevToggle.checked = localStorage.getItem('showElevation') === '1';
+detailInput.value = localStorage.getItem('contourDetail') ?? '1';
+
 const applyElevation = () => {
   mapHandle.setElevationVisible(elevToggle.checked);
-  elevLegend.hidden = !elevToggle.checked;
+  elevPanel.hidden = !elevToggle.checked;
+};
+const applyDetail = () => {
+  // Cost grows with both the cell count and the level count, so this is deliberately
+  // driven by 'change' (pointer release) rather than 'input' (every step while dragging).
+  contourInterval = mapHandle.setContourDetail(Number(detailInput.value)).interval;
+  localStorage.setItem('contourDetail', detailInput.value);
+  renderElevationLegend();
 };
 elevToggle.addEventListener('change', () => {
   localStorage.setItem('showElevation', elevToggle.checked ? '1' : '0');
   applyElevation();
 });
+detailInput.addEventListener('change', applyDetail);
 applyElevation();
+if (Number(detailInput.value) > 1) applyDetail(); // restore a remembered non-default detail
 
 // Curated reports do not depend on the rain grid, so they are wired above the try block:
 // a rain outage must not take the reports layer down with it.

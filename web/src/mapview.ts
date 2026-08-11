@@ -2,7 +2,9 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { wgs84ToGcj02 } from './gcj02.js';
 import { FLOOD_BANDS } from './render.js';
-import { contourFeatures, drawElevationCanvas, elevationScale } from './elevation.js';
+import {
+  contourFeatures, drawElevationCanvas, elevationScale, supersample, type ElevationScale,
+} from './elevation.js';
 import { t } from './strings.js';
 import type { ElevationGrid, Report } from '../../shared/types.js';
 
@@ -57,8 +59,18 @@ export function initMap(container: HTMLElement, elev: ElevationGrid, center: [nu
   const elevCanvas = document.createElement('canvas');
   elevCanvas.width = elev.lons.length;
   elevCanvas.height = elev.lats.length;
+  // The tint keeps the base scale whatever the contour detail is: its colours are the
+  // percentile ramp, which the detail handle does not touch, and redrawing it on every
+  // slider step would re-upload a texture for no visible change.
   const scale = elevationScale(elev.elevation);
   drawElevationCanvas(elevCanvas.getContext('2d')!, elev.elevation, elevCanvas.width, elevCanvas.height, scale);
+
+  let contourScale = scale;
+  const buildContours = (detail: number) => {
+    contourScale = elevationScale(elev.elevation, detail);
+    const source = supersample(elev, detail);
+    return contourFeatures(source, contourScale, wgs84ToGcj02);
+  };
 
   const dLon = elev.lons[1] - elev.lons[0];
   const dLat = elev.lats[1] - elev.lats[0];
@@ -79,10 +91,7 @@ export function initMap(container: HTMLElement, elev: ElevationGrid, center: [nu
       paint: { 'raster-resampling': 'linear', 'raster-opacity': 1 },
     });
 
-    map.addSource('contours', {
-      type: 'geojson',
-      data: contourFeatures(elev, scale, (lon, lat) => wgs84ToGcj02(lon, lat)),
-    });
+    map.addSource('contours', { type: 'geojson', data: buildContours(1) });
     map.addLayer({
       id: 'contours',
       type: 'line',
@@ -158,11 +167,20 @@ export function initMap(container: HTMLElement, elev: ElevationGrid, center: [nu
     else map.once('load', apply);
   };
 
+  /** Recomputes the contour set and returns the scale actually used, for the legend. */
+  const setContourDetail = (detail: number): ElevationScale => {
+    const data = buildContours(detail);
+    const source = map.getSource('contours') as maplibregl.GeoJSONSource | undefined;
+    source?.setData(data);
+    return contourScale;
+  };
+
   return {
     map,
     canvas,
     elevationScale: scale,
     setElevationVisible,
+    setContourDetail,
     repaint: () => {
       nudgeCanvasSource(map, 'flood');
       map.triggerRepaint();
