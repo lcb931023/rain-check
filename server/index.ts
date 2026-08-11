@@ -5,7 +5,7 @@ import { createRouter } from './routes.js';
 import { startFetcherLoop } from './fetcher.js';
 
 const app = express();
-app.use('/api', createRouter({ cacheDir: CONFIG.cacheDir, dataDir: CONFIG.dataDir }));
+app.use('/api', createRouter({ cacheDir: CONFIG.cacheDir, dataDir: CONFIG.dataDir, cities: CONFIG.cities }));
 app.use(express.static(CONFIG.distDir));
 
 startFetcherLoop();

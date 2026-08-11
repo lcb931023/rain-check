@@ -1,17 +1,18 @@
 /**
- * One-time build step: sample the Copernicus GLO-30 DEM over the Shanghai bbox
- * into data/elevation-grid.json, with a TPI-derived depression factor.
+ * One-time build step: sample the Copernicus GLO-30 DEM over a city's bbox into
+ * data/elevation-grid-<city>.json, with a TPI-derived depression factor.
  *
- * The output is committed, so deploys never re-download the ~100 MB of DEM.
- * Re-run with `npm run build-elevation` only when the bbox or step changes.
+ * The outputs are committed, so deploys never re-download the ~100 MB per DEM tile.
+ * Re-run only when a bbox or step changes:
+ *   npm run build-elevation -- beijing     # one city
+ *   npm run build-elevation -- all         # every city in the registry
  */
 import { writeFile } from 'node:fs/promises';
 import { fromUrl, Pool } from 'geotiff';
 import { computeDepression } from './tpi.js';
+import { CITIES, elevationFile, findCity, type City } from '../shared/cities.js';
 import type { ElevationGrid } from '../shared/types.js';
 
-const BBOX = { lonMin: 121.2, lonMax: 121.8, latMin: 30.95, latMax: 31.45 };
-const STEP = { lon: 0.003, lat: 0.0025 };
 const TPI_RADIUS = 4; // ~1.1km neighborhood at ~280m cells
 
 // Copernicus GLO-30 public COGs; tile named by its SW corner, 1°x1°.
@@ -56,7 +57,12 @@ async function loadTile(latSW: number, lonSW: number) {
  * grid onto the depression floor and 4% onto the ceiling. Averaging the block
  * instead is what makes the TPI neighbourhood mean measure terrain.
  */
-function sample(t: Awaited<ReturnType<typeof loadTile>>, lon: number, lat: number): number {
+function sample(
+  t: Awaited<ReturnType<typeof loadTile>>,
+  lon: number,
+  lat: number,
+  STEP: { lon: number; lat: number },
+): number {
   const clampX = (v: number) => Math.min(t.width - 1, Math.max(0, v));
   const clampY = (v: number) => Math.min(t.height - 1, Math.max(0, v));
   // rx > 0 (lon ascends with x), ry < 0 (lat descends with y), so the north edge
@@ -69,8 +75,10 @@ function sample(t: Awaited<ReturnType<typeof loadTile>>, lon: number, lat: numbe
   let n = 0;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
-      // No nodata handling: both tiles were swept pixel by pixel (25.9M values) and
-      // carry no void sentinel and no NaN — GDAL_NODATA is unset on both.
+      // No nodata handling: the two Shanghai tiles were swept pixel by pixel (25.9M
+      // values) and carry no void sentinel and no NaN — GDAL_NODATA is unset on both.
+      // Other cities' tiles are not individually verified, so buildCity range-checks
+      // its output instead; Copernicus voids would surface there as absurd elevations.
       sum += t.raster[y * t.width + x];
       n++;
     }
@@ -78,28 +86,67 @@ function sample(t: Awaited<ReturnType<typeof loadTile>>, lon: number, lat: numbe
   return sum / n;
 }
 
-const lons: number[] = [];
-for (let v = BBOX.lonMin; v <= BBOX.lonMax + 1e-9; v += STEP.lon) lons.push(Number(v.toFixed(5)));
-const lats: number[] = [];
-for (let v = BBOX.latMin; v <= BBOX.latMax + 1e-9; v += STEP.lat) lats.push(Number(v.toFixed(5)));
-
-console.log(`grid ${lons.length} x ${lats.length}; downloading DEM tiles...`);
-const tiles = { 30: await loadTile(30, 121), 31: await loadTile(31, 121) };
-
-const elev = new Float32Array(lons.length * lats.length);
-lats.forEach((lat, y) => {
-  const tile = lat < 31 ? tiles[30] : tiles[31];
-  lons.forEach((lon, x) => {
-    elev[y * lons.length + x] = sample(tile, lon, lat);
-  });
-});
-
-const depression = computeDepression(elev, lons.length, lats.length, TPI_RADIUS);
-const grid: ElevationGrid = {
-  lons,
-  lats,
-  elevation: Array.from(elev, (v) => Number(v.toFixed(1))),
-  depression: Array.from(depression, (v) => Number(v.toFixed(2))),
+const axis = (min: number, max: number, step: number) => {
+  const out: number[] = [];
+  for (let v = min; v <= max + 1e-9; v += step) out.push(Number(v.toFixed(5)));
+  return out;
 };
-await writeFile(new URL('../data/elevation-grid.json', import.meta.url), JSON.stringify(grid));
-console.log(`wrote data/elevation-grid.json (${lons.length * lats.length} cells)`);
+
+/** Tile key for the 1°x1° cell a point falls in; a bbox spanning a whole degree needs several. */
+const tileKey = (lat: number, lon: number) => `${Math.floor(lat)}/${Math.floor(lon)}`;
+
+async function buildCity(city: City): Promise<void> {
+  const { bbox, elevStep: STEP } = city;
+  const lons = axis(bbox.lonMin, bbox.lonMax, STEP.lon);
+  const lats = axis(bbox.latMin, bbox.latMax, STEP.lat);
+
+  // Every 1°x1° tile the bbox touches, not just the corner ones: a bbox wider than a
+  // degree also covers interior tiles, and a missing one would fault while sampling.
+  const keys = new Set<string>();
+  for (let lat = Math.floor(bbox.latMin); lat <= Math.floor(bbox.latMax); lat++) {
+    for (let lon = Math.floor(bbox.lonMin); lon <= Math.floor(bbox.lonMax); lon++) {
+      keys.add(tileKey(lat, lon));
+    }
+  }
+  console.log(`${city.id}: grid ${lons.length} x ${lats.length}; downloading ${keys.size} DEM tile(s) ${[...keys].join(' ')}...`);
+
+  const tiles = new Map<string, Awaited<ReturnType<typeof loadTile>>>();
+  for (const key of keys) {
+    const [lat, lon] = key.split('/').map(Number);
+    tiles.set(key, await loadTile(lat, lon));
+  }
+
+  const elev = new Float32Array(lons.length * lats.length);
+  lats.forEach((lat, y) => {
+    lons.forEach((lon, x) => {
+      elev[y * lons.length + x] = sample(tiles.get(tileKey(lat, lon))!, lon, lat, STEP);
+    });
+  });
+
+  // A tile carrying void sentinels (-32767 and friends) would otherwise be written out as
+  // plausible-looking terrain, so fail loudly instead of committing a garbage grid.
+  const lo = Math.min(...elev), hi = Math.max(...elev);
+  if (!Number.isFinite(lo) || lo < -100 || hi > 9000) {
+    throw new Error(`${city.id}: implausible elevations ${lo}..${hi} m — check the DEM tiles for voids`);
+  }
+  console.log(`${city.id}: elevation ${lo.toFixed(1)}..${hi.toFixed(1)} m`);
+
+  const depression = computeDepression(elev, lons.length, lats.length, TPI_RADIUS);
+  const grid: ElevationGrid = {
+    lons,
+    lats,
+    elevation: Array.from(elev, (v) => Number(v.toFixed(1))),
+    depression: Array.from(depression, (v) => Number(v.toFixed(2))),
+  };
+  const name = elevationFile(city.id);
+  await writeFile(new URL(`../data/${name}`, import.meta.url), JSON.stringify(grid));
+  console.log(`wrote data/${name} (${lons.length * lats.length} cells)`);
+}
+
+const arg = process.argv[2];
+const targets = arg === 'all' ? CITIES : [findCity(arg)];
+if (!targets[0]) {
+  console.error(`usage: npm run build-elevation -- <${CITIES.map((c) => c.id).join('|')}|all>`);
+  process.exit(1);
+}
+for (const city of targets as City[]) await buildCity(city);

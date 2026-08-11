@@ -6,6 +6,7 @@ html, body, #map { height: 100%; margin: 0; }
   max-width: 260px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 #panel h1 { font-size: 16px; margin: 0 0 8px; }
+#city { display: block; width: 100%; font: inherit; font-size: 13px; margin: 4px 0 10px; }
 .hint { font-size: 12px; color: #666; margin: 4px 0; }
 #timebar {
   position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);

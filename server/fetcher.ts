@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { CONFIG } from './config.js';
 import { fetchPointWeather, type PointWeather } from './caiyun.js';
+import { rainCacheFile, type City } from '../shared/cities.js';
 import type { RainGrid } from '../shared/types.js';
 
 export function gridAxes(cfg: {
@@ -76,8 +77,9 @@ export function mergeRainCache(
  * QPS 1 (per its quota page), which matched the observed behavior: a 120 ms
  * stagger drew HTTP 429 on two of every three points in a phase-locked lattice,
  * and 450 ms (~2.2 QPS) still drew scattered 429s. 1100 ms stays under 1 QPS
- * with margin; a 182-point sweep costs ~3.3 min of stagger plus request
- * latency, well inside the 3-hour refresh.
+ * with margin; a 182-point city costs ~3.3 min of stagger plus request latency,
+ * and cities are swept back to back, so even all three stay well inside the
+ * 3-hour refresh.
  */
 const STAGGER_MS = 1100;
 
@@ -129,12 +131,13 @@ interface SweepOptions {
   cacheDir?: string;
   staggerMs?: number;
   now?: () => Date;
+  cities?: City[];
 }
 
 /**
- * A sweep takes ~4 min of wall time and the refresh interval is 3 h, but a slow or
- * retrying upstream could push one past the next tick. Two overlapping sweeps would
- * double the request rate into a rate-limited API and race on the cache file, so a
+ * A sweep takes ~4 min of wall time per city and the refresh interval is 3 h, but a slow
+ * or retrying upstream could push one past the next tick. Two overlapping sweeps would
+ * double the request rate into a rate-limited API and race on the cache files, so a
  * second sweep is skipped rather than queued — the next tick picks it up.
  */
 let sweepInFlight = false;
@@ -153,9 +156,8 @@ export async function sweep(opts: SweepOptions = {}): Promise<void> {
 }
 
 async function runSweep(opts: SweepOptions): Promise<void> {
-  const cacheDir = opts.cacheDir ?? CONFIG.cacheDir;
-  const staggerMs = opts.staggerMs ?? STAGGER_MS;
   const now = opts.now ?? (() => new Date());
+  const cities = opts.cities ?? CONFIG.cities;
   let fetchPoint = opts.fetchPoint;
   if (!fetchPoint) {
     const token = process.env.CAIYUN_API_TOKEN;
@@ -163,7 +165,31 @@ async function runSweep(opts: SweepOptions): Promise<void> {
     fetchPoint = (lon, lat, begin) => fetchPointWeather(lon, lat, token, undefined, begin);
   }
 
-  const file = join(cacheDir, 'rain-grid.json');
+  // Every city draws on the same account's QPS budget, so they are swept one after
+  // another, never concurrently. Each city's cache stands alone: one city failing
+  // (or being rate-limited into a stale cache) must not cost the others their sweep.
+  for (const city of cities) {
+    try {
+      await sweepCity(city, {
+        fetchPoint,
+        cacheDir: opts.cacheDir ?? CONFIG.cacheDir,
+        staggerMs: opts.staggerMs ?? STAGGER_MS,
+        now,
+      });
+    } catch (e) {
+      console.error(`[${city.id}] sweep aborted:`, (e as Error).message);
+    }
+  }
+}
+
+async function sweepCity(city: City, opts: {
+  fetchPoint: (lon: number, lat: number, begin?: number) => Promise<PointWeather>;
+  cacheDir: string;
+  staggerMs: number;
+  now: () => Date;
+}): Promise<void> {
+  const { fetchPoint, cacheDir, staggerMs, now } = opts;
+  const file = join(cacheDir, rainCacheFile(city.id));
   const old = await readCache(file);
   // 26h rather than 24h: Caiyun returns hours starting only ~1-2h after `begin`
   // (observed in the probe), so a -24h request would clip the window's oldest hours.
@@ -171,10 +197,10 @@ async function runSweep(opts: SweepOptions): Promise<void> {
     ? Math.floor(now().getTime() / 1000) - 26 * 3600
     : undefined;
   console.log(begin === undefined
-    ? 'sweep mode: forecast (now..+48h)'
-    : 'sweep mode: backfill (-24h..+24h); forecast tail extends next sweep');
+    ? `[${city.id}] sweep mode: forecast (now..+48h)`
+    : `[${city.id}] sweep mode: backfill (-24h..+24h); forecast tail extends next sweep`);
 
-  const axes = gridAxes(CONFIG);
+  const axes = gridAxes(city);
   const results: (PointWeather | null)[][] = [];
   for (const lat of axes.lats) {
     const row: (PointWeather | null)[] = [];
@@ -182,7 +208,7 @@ async function runSweep(opts: SweepOptions): Promise<void> {
       try {
         row.push(await fetchPoint(lon, lat, begin));
       } catch (e) {
-        console.error(`fetch failed @${lon},${lat}:`, (e as Error).message);
+        console.error(`[${city.id}] fetch failed @${lon},${lat}:`, (e as Error).message);
         row.push(null);
       }
       await new Promise((r) => setTimeout(r, staggerMs));
@@ -194,11 +220,11 @@ async function runSweep(opts: SweepOptions): Promise<void> {
   if (!merged || merged === old) {
     // Cold start and outage read the same from inside the loop but not from outside it:
     // with no cache on disk there is nothing to serve, and /api/rain 503s.
-    console.error(old ? 'sweep failed entirely; serving stale cache' : 'sweep failed entirely; no cache yet');
+    console.error(`[${city.id}] ${old ? 'sweep failed entirely; serving stale cache' : 'sweep failed entirely; no cache yet'}`);
     return;
   }
   await writeCacheAtomic(file, merged);
-  console.log(`rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
+  console.log(`[${city.id}] rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
 }
 
 export function startFetcherLoop(): void {

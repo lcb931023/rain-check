@@ -1,11 +1,13 @@
 import './style.css';
 import { initMap, addReports, showCellPopup } from './mapview.js';
 import { drawFloodCanvas, floodColor, FLOOD_BANDS } from './render.js';
-import { fetchElevation, fetchRain, fetchReports } from './api.js';
+import { fetchCities, fetchElevation, fetchRain, fetchReports } from './api.js';
 import { wgs84ToGcj02 } from './gcj02.js';
 import { precomputeCellWeights } from './interp.js';
 import { computeFloodSeries } from './model.js';
-import { t, getLang, setLang } from './strings.js';
+import { t, getLang, setLang, setCityName } from './strings.js';
+
+const citySelect = document.getElementById('city') as HTMLSelectElement;
 
 function applyStrings() {
   document.querySelectorAll<HTMLElement>('[data-s]').forEach((el) => {
@@ -13,6 +15,8 @@ function applyStrings() {
   });
   document.title = t('title');
   document.getElementById('lang')!.textContent = t('langToggle');
+  // Option labels are city names, which are themselves localized.
+  for (const opt of citySelect.options) opt.textContent = cities.find((c) => c.id === opt.value)!.name[getLang()];
   const legend = document.getElementById('legend')!;
   legend.innerHTML = '';
   for (const [label, v] of [
@@ -30,8 +34,25 @@ const freshness = document.getElementById('freshness')!;
 const coverage = document.getElementById('coverage')!;
 freshness.textContent = t('loading');
 
-const elev = await fetchElevation();
-const mapHandle = initMap(document.getElementById('map')!, elev);
+// ?city= wins over the remembered choice so a shared link always opens the city it names.
+const cities = await fetchCities();
+const requested = new URLSearchParams(location.search).get('city') ?? localStorage.getItem('city');
+const city = cities.find((c) => c.id === requested) ?? cities[0];
+localStorage.setItem('city', city.id);
+setCityName(city.name);
+
+citySelect.append(...cities.map((c) => Object.assign(document.createElement('option'), { value: c.id })));
+citySelect.value = city.id;
+citySelect.addEventListener('change', () => {
+  localStorage.setItem('city', citySelect.value);
+  // The elevation grid, rain cache, interpolation weights and map centre are all per-city
+  // and all built once at startup, so a reload is both simpler and less bug-prone than
+  // tearing that state down in place.
+  location.search = `?city=${citySelect.value}`;
+});
+
+const elev = await fetchElevation(city.id);
+const mapHandle = initMap(document.getElementById('map')!, elev, city.center);
 const ctx = mapHandle.canvas.getContext('2d')!;
 applyStrings();
 
@@ -42,14 +63,14 @@ document.getElementById('lang')!.addEventListener('click', () => {
 
 // Curated reports do not depend on the rain grid, so they are wired above the try block:
 // a rain outage must not take the reports layer down with it.
-fetchReports().then((reports) => addReports(mapHandle.map, reports)).catch(() => {});
+fetchReports(city.id).then((reports) => addReports(mapHandle.map, reports)).catch(() => {});
 
 const timeInput = document.getElementById('time') as HTMLInputElement;
 const drainInput = document.getElementById('drainage') as HTMLInputElement;
 const timeLabel = document.getElementById('timelabel')!;
 
 try {
-  const rain = await fetchRain();
+  const rain = await fetchRain(city.id);
   const weights = precomputeCellWeights(rain, elev);
   let series = computeFloodSeries(rain, weights, elev.depression, Number(drainInput.value));
 
@@ -79,8 +100,8 @@ try {
     // A marker click reaches the map too, so without this a report marker would open its own
     // popup and a cell popup for the ground beneath it, overlapping.
     if ((ev.originalEvent.target as Element | null)?.closest?.('.maplibregl-marker')) return;
-    // Invert: find nearest elevation cell. GCJ-02 offset in Shanghai is a few hundred
-    // meters; for cell lookup (~280 m cells) invert by subtracting the local offset.
+    // Invert: find nearest elevation cell. The GCJ-02 offset is a few hundred meters
+    // anywhere in China; for cell lookup (~280 m cells) invert by subtracting the local offset.
     const [glon, glat] = [ev.lngLat.lng, ev.lngLat.lat];
     const [glon2, glat2] = wgs84ToGcj02(glon, glat);
     const wlon = glon - (glon2 - glon); // first-order inverse

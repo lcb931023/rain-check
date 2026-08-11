@@ -3,12 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>上海内涝地图</title>
+  <title>内涝地图</title>
 </head>
 <body>
   <div id="map"></div>
   <div id="panel">
     <h1 data-s="title"></h1>
+    <label><span data-s="city"></span>
+      <select id="city"></select>
+    </label>
     <label><span data-s="drainage"></span>
       <input id="drainage" type="range" min="0.2" max="2" step="0.1" value="1" />
     </label>

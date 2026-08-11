@@ -9,10 +9,10 @@ const AMAP_TILES = [1, 2, 3, 4].map(
   (i) => `https://webrd0${i}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}`,
 );
 
-export function initMap(container: HTMLElement, elev: ElevationGrid) {
+export function initMap(container: HTMLElement, elev: ElevationGrid, center: [number, number]) {
   const map = new maplibregl.Map({
     container,
-    center: wgs84ToGcj02(121.47, 31.23),
+    center: wgs84ToGcj02(center[0], center[1]),
     zoom: 10,
     style: {
       version: 8,

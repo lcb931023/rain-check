@@ -1,6 +1,7 @@
 const dict = {
   zh: {
-    title: '上海内涝地图',
+    title: '{city}内涝地图',
+    city: '城市',
     drainage: '排水效率',
     drainageHint: '拖动模拟排水系统好坏',
     now: '现在',
@@ -18,7 +19,8 @@ const dict = {
     langToggle: 'EN',
   },
   en: {
-    title: 'Shanghai Flood Map',
+    title: '{city} Flood Map',
+    city: 'City',
     drainage: 'Drainage efficiency',
     drainageHint: 'Drag to simulate drainage quality',
     now: 'Now',
@@ -41,4 +43,11 @@ export type Lang = 'zh' | 'en';
 let lang: Lang = (localStorage.getItem('lang') as Lang) || 'zh';
 export const getLang = () => lang;
 export function setLang(l: Lang) { lang = l; localStorage.setItem('lang', l); }
-export function t(key: keyof typeof dict['zh']): string { return dict[lang][key]; }
+
+/** The current city's localized name, substituted into `{city}` by t(). */
+let cityName: Record<Lang, string> = { zh: '', en: '' };
+export function setCityName(n: Record<Lang, string>) { cityName = n; }
+
+export function t(key: keyof typeof dict['zh']): string {
+  return dict[lang][key].replace('{city}', cityName[lang]);
+}

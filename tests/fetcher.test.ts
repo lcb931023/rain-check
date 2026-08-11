@@ -4,9 +4,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gridAxes, mergeRainCache, needsBackfill, sweep } from '../server/fetcher.js';
 import type { PointWeather } from '../server/caiyun.js';
+import type { City } from '../shared/cities.js';
 import type { RainGrid } from '../shared/types.js';
 
 const axes = { lons: [121.0], lats: [31.0] };
+
+/**
+ * A degenerate one-point bbox, so sweep tests exercise the loop without 182 fetches.
+ * `lon` distinguishes cities, letting a fake fetchPoint tell whose point it is asked for.
+ */
+const city = (id: string, lon = 121.0): City => ({
+  id,
+  name: { zh: id, en: id },
+  bbox: { lonMin: lon, lonMax: lon, latMin: 31.0, latMax: 31.0 },
+  rainStep: { lon: 0.045, lat: 0.04 },
+  elevStep: { lon: 0.003, lat: 0.0025 },
+});
+const testCity = city('testville');
+const cities = [testCity];
+const cacheName = 'rain-grid-testville.json';
 const now = new Date('2026-08-10T06:30:00Z');
 const hourIso = (d: string) => new Date(d).toISOString();
 
@@ -140,11 +156,12 @@ describe('sweep', () => {
     await sweep({
       fetchPoint: async () => { throw new Error('caiyun HTTP 429'); },
       cacheDir: dir,
+      cities,
       staggerMs: 0,
       now: () => now,
     });
-    expect(await readdir(dir)).toEqual([]); // no rain-grid.json, no leftover .tmp
-    expect(errors.mock.calls.at(-1)?.[0]).toBe('sweep failed entirely; no cache yet');
+    expect(await readdir(dir)).toEqual([]); // no rain-grid-testville.json, no leftover .tmp
+    expect(errors.mock.calls.at(-1)?.[0]).toBe('[testville] sweep failed entirely; no cache yet');
     errors.mockRestore();
   });
 
@@ -153,11 +170,12 @@ describe('sweep', () => {
     await sweep({
       fetchPoint: async () => pw(3, 1),
       cacheDir: dir,
+      cities,
       staggerMs: 0,
       now: () => now,
     });
-    expect(await readdir(dir)).toEqual(['rain-grid.json']);
-    const written: RainGrid = JSON.parse(await readFile(join(dir, 'rain-grid.json'), 'utf8'));
+    expect(await readdir(dir)).toEqual([cacheName]);
+    const written: RainGrid = JSON.parse(await readFile(join(dir, cacheName), 'utf8'));
     expect(written.fetchedAt).toBe(now.toISOString());
     expect(written.hours.length).toBe(73);
     expect(written.precip[written.nowIndex][0][0]).toBe(3);
@@ -165,8 +183,8 @@ describe('sweep', () => {
 
   it('leaves an existing cache untouched when every point fails', async () => {
     const dir = await freshDir();
-    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dir, staggerMs: 0, now: () => now });
-    const file = join(dir, 'rain-grid.json');
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dir, cities, staggerMs: 0, now: () => now });
+    const file = join(dir, cacheName);
     const before = await readFile(file, 'utf8');
     const beforeMtime = (await stat(file)).mtimeMs;
 
@@ -174,13 +192,14 @@ describe('sweep', () => {
     await sweep({
       fetchPoint: async () => { throw new Error('caiyun HTTP 400'); },
       cacheDir: dir,
+      cities,
       staggerMs: 0,
       now: () => new Date('2026-08-10T07:30:00Z'),
     });
     expect(await readFile(file, 'utf8')).toBe(before);
     expect((await stat(file)).mtimeMs).toBe(beforeMtime); // not rewritten at all
-    expect(await readdir(dir)).toEqual(['rain-grid.json']);
-    expect(errors.mock.calls.at(-1)?.[0]).toBe('sweep failed entirely; serving stale cache');
+    expect(await readdir(dir)).toEqual([cacheName]);
+    expect(errors.mock.calls.at(-1)?.[0]).toBe('[testville] sweep failed entirely; serving stale cache');
     errors.mockRestore();
   });
 
@@ -192,17 +211,58 @@ describe('sweep', () => {
       return begin === undefined ? pw(3, 1) : pwBackfill(3, 2);
     };
 
-    await sweep({ fetchPoint, cacheDir: dir, staggerMs: 0, now: () => now });
+    await sweep({ fetchPoint, cacheDir: dir, cities, staggerMs: 0, now: () => now });
     // Cold start: every point asked for history starting 26h back (margin for Caiyun's
     // habit of returning hours only from ~1-2h after `begin`).
     expect(begins[0]).toBe(Math.floor(now.getTime() / 1000) - 26 * 3600);
     expect(new Set(begins).size).toBe(1);
-    const g: RainGrid = JSON.parse(await readFile(join(dir, 'rain-grid.json'), 'utf8'));
+    const g: RainGrid = JSON.parse(await readFile(join(dir, cacheName), 'utf8'));
     expect(g.precip[0][0][0]).toBe(2); // -24h populated on the very first sweep
 
     begins.length = 0;
-    await sweep({ fetchPoint, cacheDir: dir, staggerMs: 0, now: () => new Date('2026-08-10T07:30:00Z') });
+    await sweep({ fetchPoint, cacheDir: dir, cities, staggerMs: 0, now: () => new Date('2026-08-10T07:30:00Z') });
     expect(begins.every((b) => b === undefined)).toBe(true); // warm cache: forecast mode
+  });
+
+  it('writes one cache per city and picks each city\'s mode from its own cache', async () => {
+    const dir = await freshDir();
+    const alpha = city('alpha', 121.0);
+    const beta = city('beta', 122.0);
+    const fetchPoint = async (_lon: number, _lat: number, begin?: number) =>
+      (begin === undefined ? pw(3, 1) : pwBackfill(3, 2));
+
+    // Seed alpha alone, so the next sweep meets a warm alpha and a cold beta.
+    await sweep({ fetchPoint, cacheDir: dir, cities: [alpha], staggerMs: 0, now: () => now });
+
+    const begins = new Map<number, number | undefined>();
+    await sweep({
+      fetchPoint: async (lon, lat, begin) => { begins.set(lon, begin); return fetchPoint(lon, lat, begin); },
+      cacheDir: dir,
+      cities: [alpha, beta],
+      staggerMs: 0,
+      now: () => new Date('2026-08-10T07:30:00Z'),
+    });
+
+    expect((await readdir(dir)).sort()).toEqual(['rain-grid-alpha.json', 'rain-grid-beta.json']);
+    expect(begins.get(121.0)).toBeUndefined();     // warm: forecast
+    expect(begins.get(122.0)).toBeTypeOf('number'); // cold: backfill, independent of alpha
+  });
+
+  it('sweeps the remaining cities when one city fails entirely', async () => {
+    const dir = await freshDir();
+    const errors = quietErrors();
+    await sweep({
+      fetchPoint: async (lon) => {
+        if (lon === 121.0) throw new Error('caiyun HTTP 429');
+        return pw(3, 1);
+      },
+      cacheDir: dir,
+      cities: [city('alpha', 121.0), city('beta', 122.0)],
+      staggerMs: 0,
+      now: () => now,
+    });
+    expect(await readdir(dir)).toEqual(['rain-grid-beta.json']);
+    errors.mockRestore();
   });
 
   it('skips a sweep that starts while another is still in flight', async () => {
@@ -217,6 +277,7 @@ describe('sweep', () => {
     const first = sweep({
       fetchPoint: async () => { firstCalls++; await held; return pw(3, 1); },
       cacheDir: dirA,
+      cities,
       staggerMs: 0,
       now: () => now,
     });
@@ -226,6 +287,7 @@ describe('sweep', () => {
     await sweep({
       fetchPoint: async () => { secondCalls++; return pw(9, 9); },
       cacheDir: dirB,
+      cities,
       staggerMs: 0,
       now: () => now,
     });
@@ -236,10 +298,10 @@ describe('sweep', () => {
 
     release();
     await first;
-    expect(await readdir(dirA)).toEqual(['rain-grid.json']); // the held sweep still finishes
+    expect(await readdir(dirA)).toEqual([cacheName]); // the held sweep still finishes
 
     // The flag clears afterwards, so the next tick is not locked out.
-    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dirB, staggerMs: 0, now: () => now });
-    expect(await readdir(dirB)).toEqual(['rain-grid.json']);
+    await sweep({ fetchPoint: async () => pw(3, 1), cacheDir: dirB, cities, staggerMs: 0, now: () => now });
+    expect(await readdir(dirB)).toEqual([cacheName]);
   });
 });
