@@ -12,6 +12,7 @@ services:
     plan: free
     region: oregon
     branch: main
+    repo: https://github.com/lcb931023/rain-check
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
