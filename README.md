@@ -111,6 +111,31 @@ first sweep), `/api/elevation`, `/api/reports` — each taking `?city=<id>` and
 defaulting to the first enabled city. An id outside the enabled set is a 404;
 ids are resolved against the registry rather than interpolated into a path.
 
+## Logs
+
+Everything the server prints also lands in `logs/server.log` (gitignored,
+rolled to `server.log.1` past 5 MB), so a failure that happened hours ago is
+still diagnosable. Lines are `<ISO timestamp> <LEVEL> <message>`.
+
+`TRACE` lines are file-only — one per fetched point, with its latency — because
+per-point timings are what tell you whether a 429 was your own request rate or
+the account's ceiling, and they would drown the console. Everything else is
+mirrored to stdout.
+
+Worth knowing when reading a quota post-mortem:
+
+- Each city logs a `sweep done: N ok, N failed, N skipped of N pts in Ns` line.
+  Calls actually spent is `ok + failed`; `skipped` is what the failure
+  circuit-breaker saved.
+- A Caiyun error carries its response body, truncated to 200 chars. This is the
+  only thing distinguishing "too many requests per second" from "the plan's
+  total call pool is spent" — both arrive as HTTP 429.
+- The startup line records the port, enabled cities, refresh interval,
+  `fetchOnStart`, and whether the token was found — never the token itself.
+
+The request URL embeds the API token, so it is never logged; failures are
+identified by their coordinates instead.
+
 ## Deploy
 
 Any Node 20+ host (Render/Fly free tiers work): build command

@@ -48,7 +48,32 @@ describe('fetchPointWeather', () => {
     await expect(fetchPointWeather(121, 31, 'T', fetchFn as any)).rejects.toThrow(/quota/);
   });
   it('throws on HTTP error', async () => {
-    const fetchFn = vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) });
+    const fetchFn = vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => '' });
     await expect(fetchPointWeather(121, 31, 'T', fetchFn as any)).rejects.toThrow(/429/);
+  });
+
+  it('carries the error body, which is what separates throttling from an exhausted quota', async () => {
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => '{"status":"failed","error":"exceed the total number of requests"}',
+    });
+    await expect(fetchPointWeather(121, 31, 'T', fetchFn as any))
+      .rejects.toThrow(/429.*exceed the total number of requests/);
+  });
+
+  it('still reports the status when the body cannot be read', async () => {
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: () => { throw new Error('stream already consumed'); },
+    });
+    await expect(fetchPointWeather(121, 31, 'T', fetchFn as any)).rejects.toThrow(/caiyun HTTP 503/);
+  });
+
+  it('never leaks the token into the thrown message', async () => {
+    const fetchFn = vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => 'nope' });
+    await expect(fetchPointWeather(121, 31, 'SECRET-TOKEN', fetchFn as any))
+      .rejects.toThrow(expect.not.stringContaining('SECRET-TOKEN') as any);
   });
 });

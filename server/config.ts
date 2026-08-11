@@ -21,6 +21,7 @@ export const CONFIG = {
   refreshMinutes: Number(process.env.RAIN_REFRESH_MINUTES ?? 180),
   fetchOnStart: /^(1|true|yes)$/i.test(process.env.FETCH_ON_START ?? ''),
   cacheDir: new URL('../cache/', import.meta.url).pathname,
+  logDir: new URL('../logs/', import.meta.url).pathname,
   dataDir: new URL('../data/', import.meta.url).pathname,
   distDir: new URL('../dist/', import.meta.url).pathname,
 };

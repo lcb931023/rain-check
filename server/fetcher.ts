@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { CONFIG } from './config.js';
+import { error, log, trace, warn } from './log.js';
 import { fetchPointWeather, type PointWeather } from './caiyun.js';
 import { rainCacheFile, type City } from '../shared/cities.js';
 import type { RainGrid } from '../shared/types.js';
@@ -77,9 +78,9 @@ export function mergeRainCache(
  * QPS 1 (per its quota page), which matched the observed behavior: a 120 ms
  * stagger drew HTTP 429 on two of every three points in a phase-locked lattice,
  * and 450 ms (~2.2 QPS) still drew scattered 429s. 1100 ms stays under 1 QPS
- * with margin; a 182-point city costs ~3.3 min of stagger plus request latency,
- * and cities are swept back to back, so even all three stay well inside the
- * 3-hour refresh.
+ * with margin; an inner-city grid of 20-25 points costs ~25s of stagger plus
+ * request latency, and cities are swept back to back, so even all three stay
+ * well inside the 3-hour refresh.
  */
 const STAGGER_MS = 1100;
 
@@ -142,7 +143,7 @@ interface SweepOptions {
 }
 
 /**
- * A sweep takes ~4 min of wall time per city and the refresh interval is 3 h, but a slow
+ * A sweep takes a couple of minutes and the refresh interval is 3 h, but a slow
  * or retrying upstream could push one past the next tick. Two overlapping sweeps would
  * double the request rate into a rate-limited API and race on the cache files, so a
  * second sweep is skipped rather than queued — the next tick picks it up.
@@ -151,7 +152,7 @@ let sweepInFlight = false;
 
 export async function sweep(opts: SweepOptions = {}): Promise<void> {
   if (sweepInFlight) {
-    console.warn('sweep already in flight; skipping this tick');
+    warn('sweep already in flight; skipping this tick');
     return;
   }
   sweepInFlight = true;
@@ -168,7 +169,7 @@ async function runSweep(opts: SweepOptions): Promise<void> {
   let fetchPoint = opts.fetchPoint;
   if (!fetchPoint) {
     const token = process.env.CAIYUN_API_TOKEN;
-    if (!token) { console.warn('CAIYUN_API_TOKEN missing; fetcher idle'); return; }
+    if (!token) { warn('CAIYUN_API_TOKEN missing; fetcher idle'); return; }
     fetchPoint = (lon, lat, begin) => fetchPointWeather(lon, lat, token, undefined, begin);
   }
 
@@ -184,7 +185,7 @@ async function runSweep(opts: SweepOptions): Promise<void> {
         now,
       });
     } catch (e) {
-      console.error(`[${city.id}] sweep aborted:`, (e as Error).message);
+      error(`[${city.id}] sweep aborted:`, (e as Error).message);
     }
   }
 }
@@ -203,7 +204,7 @@ async function sweepCity(city: City, opts: {
   const begin = needsBackfill(old, now())
     ? Math.floor(now().getTime() / 1000) - 26 * 3600
     : undefined;
-  console.log(begin === undefined
+  log(begin === undefined
     ? `[${city.id}] sweep mode: forecast (now..+48h)`
     : `[${city.id}] sweep mode: backfill (-24h..+24h); forecast tail extends next sweep`);
 
@@ -215,19 +216,26 @@ async function sweepCity(city: City, opts: {
   // fresh burst of rejected requests proving the same thing.
   let consecutiveFailures = 0;
   let abandoned = false;
+  let ok = 0;
+  let failed = 0;
+  const startedAt = Date.now();
   for (const lat of axes.lats) {
     const row: (PointWeather | null)[] = [];
     for (const lon of axes.lons) {
       if (abandoned) { row.push(null); continue; }
+      const t0 = Date.now();
       try {
         row.push(await fetchPoint(lon, lat, begin));
         consecutiveFailures = 0;
+        ok++;
+        trace(`[${city.id}] ok @${lon},${lat} ${Date.now() - t0}ms`);
       } catch (e) {
-        console.error(`[${city.id}] fetch failed @${lon},${lat}:`, (e as Error).message);
+        failed++;
+        error(`[${city.id}] fetch failed @${lon},${lat}:`, (e as Error).message);
         row.push(null);
         if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           abandoned = true;
-          console.error(`[${city.id}] ${consecutiveFailures} consecutive failures; abandoning the rest of this city`);
+          error(`[${city.id}] ${consecutiveFailures} consecutive failures; abandoning the rest of this city`);
         }
       }
       await new Promise((r) => setTimeout(r, staggerMs));
@@ -235,15 +243,22 @@ async function sweepCity(city: City, opts: {
     results.push(row);
   }
 
+  const points = axes.lons.length * axes.lats.length;
+  // One line per city per sweep carrying the numbers a quota or throttling post-mortem
+  // needs: how many calls were actually spent, how many came back, and over what span.
+  log(`[${city.id}] sweep done: ${ok} ok, ${failed} failed, ${points - ok - failed} skipped`
+    + ` of ${points} pts in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+    + (abandoned ? ' (abandoned early)' : ''));
+
   const merged = mergeRainCache(old, results, axes, now());
   if (!merged || merged === old) {
     // Cold start and outage read the same from inside the loop but not from outside it:
     // with no cache on disk there is nothing to serve, and /api/rain 503s.
-    console.error(`[${city.id}] ${old ? 'sweep failed entirely; serving stale cache' : 'sweep failed entirely; no cache yet'}`);
+    error(`[${city.id}] ${old ? 'sweep failed entirely; serving stale cache' : 'sweep failed entirely; no cache yet'}`);
     return;
   }
   await writeCacheAtomic(file, merged);
-  console.log(`[${city.id}] rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
+  log(`[${city.id}] rain cache updated ${merged.fetchedAt} (${axes.lons.length * axes.lats.length} pts)`);
 }
 
 /**
@@ -282,11 +297,11 @@ export function startFetcherLoop(): void {
   })
     .then((due) => {
       if (!due) {
-        console.log('startup sweep skipped: every city cache is fresh (FETCH_ON_START=1 to force)');
+        log('startup sweep skipped: every city cache is fresh (FETCH_ON_START=1 to force)');
         return;
       }
-      return sweep().catch((e) => console.error('sweep error:', e));
+      return sweep().catch((e) => error('sweep error:', e));
     })
-    .catch((e) => console.error('startup sweep check failed:', e));
-  setInterval(() => sweep().catch((e) => console.error('sweep error:', e)), CONFIG.refreshMinutes * 60_000);
+    .catch((e) => error('startup sweep check failed:', e));
+  setInterval(() => sweep().catch((e) => error('sweep error:', e)), CONFIG.refreshMinutes * 60_000);
 }
