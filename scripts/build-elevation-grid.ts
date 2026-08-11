@@ -6,7 +6,7 @@
  * Re-run with `npm run build-elevation` only when the bbox or step changes.
  */
 import { writeFile } from 'node:fs/promises';
-import { fromUrl } from 'geotiff';
+import { fromUrl, Pool } from 'geotiff';
 import { computeDepression } from './tpi.js';
 import type { ElevationGrid } from '../shared/types.js';
 
@@ -20,14 +20,30 @@ const tileUrl = (latSW: number, lonSW: number) => {
   return `https://copernicus-dem-30m.s3.amazonaws.com/${name}/${name}.tif`;
 };
 
-async function loadTile(latSW: number, lonSW: number) {
-  const tiff = await fromUrl(tileUrl(latSW, lonSW));
+// S3 throttles many parallel block fetches, so retry and cap concurrency.
+const fetchPool = new Pool({ maxWorkers: 8 });
+
+async function loadTileOnce(latSW: number, lonSW: number) {
+  const tiff = await fromUrl(tileUrl(latSW, lonSW), { retry: 5, pool: fetchPool });
   const image = await tiff.getImage();
   const raster = (await image.readRasters({ interleave: true })) as Float32Array;
   const [ox, oy] = image.getOrigin(); // top-left lon, lat
   const [rx, ry] = image.getResolution(); // ry is negative
   const width = image.getWidth();
   return { raster, ox, oy, rx, ry, width, height: image.getHeight() };
+}
+
+// The initial header fetch can also fail transiently; geotiff's internal retry
+// does not fully cover it, so retry the whole tile load a few times.
+async function loadTile(latSW: number, lonSW: number) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await loadTileOnce(latSW, lonSW);
+    } catch (err) {
+      if (attempt >= 5) throw err;
+      console.warn(`tile ${latSW}/${lonSW} failed (${String(err)}); retrying ${attempt + 1}/5...`);
+    }
+  }
 }
 
 /**
