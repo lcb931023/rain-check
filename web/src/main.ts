@@ -7,6 +7,11 @@ import { wgs84ToGcj02 } from './gcj02.js';
 import { precomputeCellWeights } from './interp.js';
 import { computeFloodSeries } from './model.js';
 import { t, getLang, setLang, setCityName } from './strings.js';
+import { maybeShowIntro, maybeStartTour, showIntro, startTour, onRelocalize } from './onboarding.js';
+
+// Shown immediately, before any data loads: the intro doubles as the loading screen, and
+// on a first visit its dismissal is what hands over to the tour at the bottom of this file.
+const introDone = maybeShowIntro();
 
 const citySelect = document.getElementById('city') as HTMLSelectElement;
 const elevToggle = document.getElementById('showElevation') as HTMLInputElement;
@@ -86,11 +91,14 @@ const mapHandle = initMap(document.getElementById('map')!, elev, city.center);
 const ctx = mapHandle.canvas.getContext('2d')!;
 let contourInterval = mapHandle.elevationScale.interval;
 applyStrings();
+onRelocalize(applyStrings); // the intro's own language toggle keeps the panel in sync
 
 document.getElementById('lang')!.addEventListener('click', () => {
   setLang(getLang() === 'zh' ? 'en' : 'zh');
   applyStrings();
 });
+document.getElementById('about')!.addEventListener('click', () => { showIntro(); });
+document.getElementById('tourOpen')!.addEventListener('click', () => { startTour(); });
 
 // Remembered like the language and city, so an inspection session survives a reload.
 elevToggle.checked = localStorage.getItem('showElevation') === '1';
@@ -114,6 +122,10 @@ elevToggle.addEventListener('change', () => {
 detailInput.addEventListener('change', applyDetail);
 applyElevation();
 if (Number(detailInput.value) > 1) applyDetail(); // restore a remembered non-default detail
+
+// First visit only: the tour follows the intro. Wired before the rain fetch on purpose —
+// every element it points at exists by now, so a rain outage must not swallow it.
+introDone.then(maybeStartTour);
 
 // Curated reports do not depend on the rain grid, so they are wired above the try block:
 // a rain outage must not take the reports layer down with it.

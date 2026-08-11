@@ -77,6 +77,25 @@ The city is picked in the UI, remembered in `localStorage`, and overridable
 per-link with `?city=beijing` (the URL wins, so shared links open where they
 say). Switching cities reloads the page.
 
+## First-run screens
+
+Two screens run before the map on a first visit, built for demo launches where
+most of the audience arrives cold:
+
+1. **Intro** — a full-page explainer: what the map is for (driving, flood prep,
+   takeout timing), the bucket model's actual formula with its constants, and
+   documentation of the data sources with links. It appears immediately, so it
+   doubles as the loading screen, and it carries its own language toggle (which
+   also relocalizes the app underneath).
+2. **Tour** — a six-step spotlight overlay over the live UI: map, city picker,
+   drainage slider, legend, terrain toggle, timebar. Esc or 跳过 exits.
+
+Each shows once per browser (`seenIntro`/`seenTour` in `localStorage`) and can
+be reopened any time from the 关于 and 教程 buttons in the panel. The tour's
+dim layer is a full-screen div with the spotlight punched out via an even-odd
+`clip-path`; the usual giant-box-shadow trick silently stops painting past
+~2000px of spread in Chrome, which a large monitor exceeds.
+
 Adding a city is a registry entry plus one `npm run build-elevation -- <id>`
 run; nothing else is city-specific.
 
