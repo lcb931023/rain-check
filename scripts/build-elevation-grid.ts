@@ -186,3 +186,7 @@ if (!targets[0]) {
   process.exit(1);
 }
 for (const city of targets as City[]) await buildCity(city);
+
+// geotiff's Pool holds worker threads open, which keep the event loop alive: without this
+// the script sits there after writing its output, looking like it is still downloading.
+await fetchPool.destroy();
