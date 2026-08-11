@@ -1,0 +1,31 @@
+# Render blueprint for rain-check (China Flood Map demo)
+#
+# Deploy: push this repo to GitHub, then in Render create a "Blueprint" and
+# point it at the repo. Render reads this file and provisions the service.
+#
+# Secrets (CAIYUN_API_TOKEN) are managed in the Render dashboard, not here —
+# set them once after the first deploy (Env > Add Secret Variable).
+services:
+  - type: web
+    name: rain-check
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # Provided in the Render dashboard (treat as a secret). Without it the
+      # server still runs but /api/rain answers 503 until a token is set.
+      - key: CAIYUN_API_TOKEN
+        sync: false
+      # Optional: limit which cities are swept to save Caiyun quota, e.g.
+      # "CITIES=shanghai,zhengzhou". Unset sweeps all three in the registry.
+      - key: CITIES
+        sync: false
+      # Optional: how often the server re-sweeps rain. Higher = fewer calls.
+      - key: RAIN_REFRESH_MINUTES
+        value: "180"
