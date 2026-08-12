@@ -82,6 +82,14 @@ html, body, #map { height: 100%; margin: 0; }
 }
 .intro-use .emoji { display: block; font-size: 20px; }
 .intro-use strong { display: block; font-size: 13px; color: #0f172a; margin: 2px 0 4px; }
+.intro-repo {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px;
+  background: #eff6ff; border-radius: 10px; padding: 10px 14px;
+  font-size: 13px; color: #334155; margin-top: 14px;
+}
+.intro-repo a { color: #2E6BE6; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.intro-repo a:hover { text-decoration: underline; }
+
 .intro-details {
   margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 12px;
 }

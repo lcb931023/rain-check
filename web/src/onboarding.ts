@@ -6,6 +6,8 @@ import { t, getLang, setLang } from './strings.js';
  * the panel's 关于/教程 buttons.
  */
 
+const REPO_URL = 'https://github.com/lcb931023/rain-check';
+
 const seen = (k: string) => localStorage.getItem(k) === '1';
 const mark = (k: string) => localStorage.setItem(k, '1');
 
@@ -48,6 +50,12 @@ export function showIntro(): Promise<void> {
             ${uses.map(([emoji, title, body]) => `
               <div class="intro-use"><span class="emoji">${emoji}</span>
                 <strong>${t(title)}</strong>${t(body)}</div>`).join('')}
+          </div>
+
+          <div class="intro-repo">
+            <span>${t('introRepoLead')}</span>
+            <a href="${REPO_URL}" target="_blank" rel="noopener">${t('introRepoLink')} ↗</a>
+            <a href="${REPO_URL}/issues/new" target="_blank" rel="noopener">${t('introIssueLink')} ↗</a>
           </div>
 
           <details class="intro-details"${detailsOpen ? ' open' : ''}>
