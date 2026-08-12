@@ -5,7 +5,7 @@ import { RAMP, rampColor } from './elevation.js';
 import { fetchCities, fetchElevation, fetchRain, fetchReports } from './api.js';
 import { wgs84ToGcj02 } from './gcj02.js';
 import { precomputeCellWeights } from './interp.js';
-import { computeFloodSeries } from './model.js';
+import { computeFloodSeries, NOMINAL_DRAIN_MM_PER_HOUR } from './model.js';
 import { t, getLang, setLang, setCityName } from './strings.js';
 import { maybeShowIntro, maybeStartTour, showIntro, startTour, onRelocalize } from './onboarding.js';
 
@@ -18,6 +18,15 @@ const elevToggle = document.getElementById('showElevation') as HTMLInputElement;
 const elevPanel = document.getElementById('elevPanel')!;
 const elevLegend = document.getElementById('elevLegend')!;
 const detailInput = document.getElementById('contourDetail') as HTMLInputElement;
+const drainInput = document.getElementById('drainage') as HTMLInputElement;
+const drainValue = document.getElementById('drainageValue') as HTMLOutputElement;
+
+/** The slider's k is dimensionless; what it means to a reader is the capacity it buys. */
+function renderDrainageValue() {
+  const mmPerHour = Number(drainInput.value) * NOMINAL_DRAIN_MM_PER_HOUR;
+  drainValue.textContent = `${Math.round(mmPerHour)} ${t('drainageUnit')}`;
+  drainValue.title = t('drainageValueTitle');
+}
 
 /**
  * Built from the scale derived from this city's grid, so the numbers on it are the
@@ -52,15 +61,21 @@ function applyStrings() {
   // Option labels are city names, which are themselves localized.
   for (const opt of citySelect.options) opt.textContent = cities.find((c) => c.id === opt.value)!.name[getLang()];
   renderElevationLegend();
+  renderDrainageValue();
   const legend = document.getElementById('legend')!;
   legend.innerHTML = '';
-  for (const [label, v] of [
-    ['bandNone', 0], ['bandPossible', FLOOD_BANDS.possible], ['bandSevere', FLOOD_BANDS.severe],
+  // F = W × D with D ≈ 1 on flat ground, so the band thresholds read as millimetres of
+  // standing water — an approximation the tooltip has to keep honest about.
+  legend.title = t('legendAmountTitle');
+  for (const [label, amount, v] of [
+    ['bandNone', 'bandNoneAmount', 0],
+    ['bandPossible', 'bandPossibleAmount', FLOOD_BANDS.possible],
+    ['bandSevere', 'bandSevereAmount', FLOOD_BANDS.severe],
   ] as const) {
     const [r, g, b, a] = floodColor(v + 1);
     legend.insertAdjacentHTML(
       'beforeend',
-      `<div><i style="background: rgba(${r},${g},${b},${a / 255})"></i>${t(label)}</div>`,
+      `<div><i style="background: rgba(${r},${g},${b},${a / 255})"></i>${t(label)}<small>${t(amount)}</small></div>`,
     );
   }
 }
@@ -132,7 +147,6 @@ introDone.then(maybeStartTour);
 fetchReports(city.id).then((reports) => addReports(mapHandle.map, reports)).catch(() => {});
 
 const timeInput = document.getElementById('time') as HTMLInputElement;
-const drainInput = document.getElementById('drainage') as HTMLInputElement;
 const timeLabel = document.getElementById('timelabel')!;
 
 try {
@@ -144,10 +158,15 @@ try {
   timeInput.max = String(rain.hours.length - 1);
   timeInput.value = String(rain.nowIndex);
 
+  // Set while a cell popup is open; the popup shows a slice of `series`, which the drainage
+  // slider replaces wholesale, so every redraw has to reach it too.
+  let redrawCurve: ((series: Float32Array[], displayIndex: number) => void) | null = null;
+
   const draw = () => {
     const ti = Number(timeInput.value);
     drawFloodCanvas(ctx, series[ti], elev.lons.length, elev.lats.length);
     mapHandle.repaint();
+    redrawCurve?.(series, ti);
     const d = new Date(rain.hours[ti]);
     const rel = ti - rain.nowIndex;
     const relText = rel === 0 ? t('now') : `${rel > 0 ? '+' : ''}${rel}h`;
@@ -158,6 +177,7 @@ try {
   timeInput.addEventListener('input', draw);
   drainInput.addEventListener('input', () => {
     series = computeFloodSeries(rain, weights, elev.depression, Number(drainInput.value));
+    renderDrainageValue();
     draw();
   });
   timeInput.disabled = false;
@@ -175,7 +195,7 @@ try {
     const xi = Math.round((wlon - elev.lons[0]) / (elev.lons[1] - elev.lons[0]));
     const yi = Math.round((wlat - elev.lats[0]) / (elev.lats[1] - elev.lats[0]));
     if (xi < 0 || xi >= elev.lons.length || yi < 0 || yi >= elev.lats.length) return;
-    showCellPopup(
+    redrawCurve = showCellPopup(
       mapHandle.map, ev.lngLat, series, rain.hours,
       rain.nowIndex, Number(timeInput.value), yi * elev.lons.length + xi,
     );

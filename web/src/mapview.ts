@@ -229,6 +229,11 @@ export function addReports(map: maplibregl.Map, reports: Report[]) {
   }
 }
 
+/**
+ * Opens the cell's 72-hour curve and returns a redraw hook: the curve is a view of a series
+ * the drainage slider recomputes, so the caller feeds it the new series rather than the popup
+ * holding a copy that silently goes stale. A no-op once the popup has been closed.
+ */
 export function showCellPopup(
   map: maplibregl.Map,
   gcjLngLat: { lng: number; lat: number },
@@ -237,40 +242,49 @@ export function showCellPopup(
   nowIndex: number,
   displayIndex: number,
   cellIdx: number,
-) {
+): (series: Float32Array[], displayIndex: number) => void {
   const cv = document.createElement('canvas');
   cv.width = 240; cv.height = 80;
   const ctx = cv.getContext('2d')!;
-  const values = series.map((s) => s[cellIdx]);
-  const max = Math.max(FLOOD_BANDS.severe, ...values);
-  const px = (i: number) => (i / (values.length - 1)) * 240;
-  const py = (v: number) => 78 - (v / max) * 70;
-  ctx.strokeStyle = '#2E6BE6';
-  ctx.beginPath();
-  values.forEach((v, i) => {
-    const x = px(i);
-    const y = py(v);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-  const nx = px(nowIndex);
-  ctx.strokeStyle = '#999';
-  ctx.setLineDash([3, 3]);
-  ctx.beginPath(); ctx.moveTo(nx, 0); ctx.lineTo(nx, 80); ctx.stroke();
-
-  // Mark the hour the label describes, so its referent on the curve is visible.
-  ctx.fillStyle = '#0B2E8A';
-  ctx.beginPath();
-  ctx.arc(Math.min(237, Math.max(3, px(displayIndex))), py(values[displayIndex]), 3, 0, 2 * Math.PI);
-  ctx.fill();
-
-  const v = values[displayIndex];
-  const band = v >= FLOOD_BANDS.severe ? t('bandSevere') : v >= FLOOD_BANDS.possible ? t('bandPossible') : t('bandNone');
-  const d = new Date(hours[displayIndex]);
-  const label = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00 · ${band}`;
+  const caption = Object.assign(document.createElement('div'), { style: 'font-weight:600' });
   const wrap = document.createElement('div');
-  wrap.append(Object.assign(document.createElement('div'), { textContent: label, style: 'font-weight:600' }), cv);
+  wrap.append(caption, cv);
+
+  const render = (s: Float32Array[], ti: number) => {
+    const values = s.map((f) => f[cellIdx]);
+    const max = Math.max(FLOOD_BANDS.severe, ...values);
+    const px = (i: number) => (i / (values.length - 1)) * 240;
+    const py = (v: number) => 78 - (v / max) * 70;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.setLineDash([]);
+    ctx.strokeStyle = '#2E6BE6';
+    ctx.beginPath();
+    values.forEach((v, i) => {
+      const x = px(i);
+      const y = py(v);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    const nx = px(nowIndex);
+    ctx.strokeStyle = '#999';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(nx, 0); ctx.lineTo(nx, 80); ctx.stroke();
+
+    // Mark the hour the label describes, so its referent on the curve is visible.
+    ctx.fillStyle = '#0B2E8A';
+    ctx.beginPath();
+    ctx.arc(Math.min(237, Math.max(3, px(ti))), py(values[ti]), 3, 0, 2 * Math.PI);
+    ctx.fill();
+
+    const v = values[ti];
+    const band = v >= FLOOD_BANDS.severe ? t('bandSevere') : v >= FLOOD_BANDS.possible ? t('bandPossible') : t('bandNone');
+    const d = new Date(hours[ti]);
+    caption.textContent = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:00 · ${band}`;
+  };
+
+  render(series, displayIndex);
   // maplibre's default popup maxWidth is 240px, which is the canvas width alone: without this
   // the last hours of the sparkline spill outside the popup's white box onto the map.
-  new maplibregl.Popup({ maxWidth: '280px' }).setLngLat(gcjLngLat).setDOMContent(wrap).addTo(map);
+  const popup = new maplibregl.Popup({ maxWidth: '280px' }).setLngLat(gcjLngLat).setDOMContent(wrap).addTo(map);
+  return (s, ti) => { if (popup.isOpen()) render(s, ti); };
 }
