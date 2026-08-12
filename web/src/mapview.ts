@@ -1,7 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { wgs84ToGcj02 } from './gcj02.js';
-import { FLOOD_BANDS } from './render.js';
+import { FLOOD_BANDS, floodColor } from './render.js';
 import {
   contourFeatures, drawElevationCanvas, elevationScale, supersample, type ElevationScale,
 } from './elevation.js';
@@ -256,8 +256,20 @@ export function showCellPopup(
     const px = (i: number) => (i / (values.length - 1)) * 240;
     const py = (v: number) => 78 - (v / max) * 70;
     ctx.clearRect(0, 0, cv.width, cv.height);
+    // Severity wash behind the curve: the map's own colour ramp sampled down the value
+    // axis, so a height on the curve reads in the same colour the map paints that value.
+    // Softened so the curve stays legible over the darkest band.
+    const grad = ctx.createLinearGradient(0, py(0), 0, py(max));
+    const gradSteps = 24;
+    for (let i = 0; i <= gradSteps; i++) {
+      const [r, g, b, a] = floodColor((i / gradSteps) * max);
+      grad.addColorStop(i / gradSteps, `rgba(${r},${g},${b},${(a / 255) * 0.6})`);
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.setLineDash([]);
     ctx.strokeStyle = '#2E6BE6';
+    ctx.lineWidth = 2;
     ctx.beginPath();
     values.forEach((v, i) => {
       const x = px(i);
@@ -267,6 +279,7 @@ export function showCellPopup(
     ctx.stroke();
     const nx = px(nowIndex);
     ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(nx, 0); ctx.lineTo(nx, 80); ctx.stroke();
 

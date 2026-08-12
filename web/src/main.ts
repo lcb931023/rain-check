@@ -64,18 +64,13 @@ function applyStrings() {
   renderDrainageValue();
   const legend = document.getElementById('legend')!;
   legend.innerHTML = '';
-  // F = W × D with D ≈ 1 on flat ground, so the band thresholds read as millimetres of
-  // standing water — an approximation the tooltip has to keep honest about.
-  legend.title = t('legendAmountTitle');
-  for (const [label, amount, v] of [
-    ['bandNone', 'bandNoneAmount', 0],
-    ['bandPossible', 'bandPossibleAmount', FLOOD_BANDS.possible],
-    ['bandSevere', 'bandSevereAmount', FLOOD_BANDS.severe],
+  for (const [label, v] of [
+    ['bandNone', 0], ['bandPossible', FLOOD_BANDS.possible], ['bandSevere', FLOOD_BANDS.severe],
   ] as const) {
     const [r, g, b, a] = floodColor(v + 1);
     legend.insertAdjacentHTML(
       'beforeend',
-      `<div><i style="background: rgba(${r},${g},${b},${a / 255})"></i>${t(label)}<small>${t(amount)}</small></div>`,
+      `<div><i style="background: rgba(${r},${g},${b},${a / 255})"></i>${t(label)}</div>`,
     );
   }
 }
