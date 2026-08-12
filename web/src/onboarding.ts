@@ -33,6 +33,8 @@ export function showIntro(): Promise<void> {
 
     // All interpolated text is our own dict, never user or network data, so innerHTML is safe.
     const render = () => {
+      // The language toggle re-renders the whole card; keep the disclosure as the user left it.
+      const detailsOpen = root.querySelector<HTMLDetailsElement>('.intro-details')?.open ?? false;
       root.innerHTML = `
         <div class="intro-card">
           <div class="intro-top">
@@ -48,22 +50,26 @@ export function showIntro(): Promise<void> {
                 <strong>${t(title)}</strong>${t(body)}</div>`).join('')}
           </div>
 
-          <h2>${t('introModelHeading')}</h2>
-          <p class="intro-body">${t('introModelIntro')}</p>
-          <pre class="intro-formula">${t('fmLine1')}\n${t('fmLine2')}\n${t('fmLine3')}</pre>
-          <ul class="intro-notes">
-            <li>${t('fmNote1')}</li>
-            <li>${t('fmNote2')}</li>
-            <li>${t('fmNote3')}</li>
-          </ul>
+          <details class="intro-details"${detailsOpen ? ' open' : ''}>
+            <summary>${t('introDetailsSummary')}</summary>
 
-          <h2>${t('introDataHeading')}</h2>
-          ${sources.map(([title, body, url]) => `
-            <div class="intro-source">
-              <strong>${t(title)}</strong>
-              ${url ? `<a href="${url}" target="_blank" rel="noopener">${t('introDocsLink')}</a>` : ''}
-              <p>${t(body)}</p>
-            </div>`).join('')}
+            <h2>${t('introModelHeading')}</h2>
+            <p class="intro-body">${t('introModelIntro')}</p>
+            <pre class="intro-formula">${t('fmLine1')}\n${t('fmLine2')}\n${t('fmLine3')}</pre>
+            <ul class="intro-notes">
+              <li>${t('fmNote1')}</li>
+              <li>${t('fmNote2')}</li>
+              <li>${t('fmNote3')}</li>
+            </ul>
+
+            <h2>${t('introDataHeading')}</h2>
+            ${sources.map(([title, body, url]) => `
+              <div class="intro-source">
+                <strong>${t(title)}</strong>
+                ${url ? `<a href="${url}" target="_blank" rel="noopener">${t('introDocsLink')}</a>` : ''}
+                <p>${t(body)}</p>
+              </div>`).join('')}
+          </details>
 
           <p class="intro-disclaimer">⚠️ ${t('introDisclaimer')}</p>
           <button class="intro-start">${t('introStart')}</button>
